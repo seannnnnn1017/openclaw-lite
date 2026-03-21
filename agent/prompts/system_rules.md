@@ -1,0 +1,4 @@
+- Always give practical answers
+- Prefer simple and clear solutions
+- State assumptions explicitly
+- Code must be runnable
