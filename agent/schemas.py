@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Dict
 
 
@@ -20,6 +20,14 @@ class AgentLayers:
 {self.boundaries}
 """.strip()
 
+    @staticmethod
+    def from_json(data: Dict):
+        return AgentLayers(
+            identity=data["identity"],
+            system_rules=data["system_rules"],
+            boundaries=data["boundaries"]
+        )
+
 
 @dataclass
 class Message:
@@ -31,10 +39,10 @@ class Message:
 class ChatRequest:
     model: str
     messages: List[Message]
-    temperature: float = 0.7
-    max_tokens: int = 512
+    temperature: float
+    max_tokens: int
 
-    def to_dict(self) -> Dict:
+    def to_dict(self):
         return {
             "model": self.model,
             "messages": [
