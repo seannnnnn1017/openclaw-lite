@@ -132,6 +132,7 @@ class Config:
         )
 
         self.base_url = data["llm"]["base_url"]
+        self.api_key = data["llm"].get("api_key", "lm-studio")
         self.model = data["llm"]["model"]
         self.temperature = data["llm"]["temperature"]
         self.max_tokens = data["llm"]["max_tokens"]

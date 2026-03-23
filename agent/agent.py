@@ -1,4 +1,5 @@
 import json
+import re
 
 from schemas import Message, ChatRequest
 from skill_client import SkillClient
@@ -107,20 +108,7 @@ class SimpleAgent:
             Message(role="user", content=user_input),
         ]
 
-    def _parse_skill_call(self, text: str):
-        if not text:
-            return None
-
-        candidate = text.strip()
-        if candidate.startswith("```") and candidate.endswith("```"):
-            lines = candidate.splitlines()
-            candidate = "\n".join(lines[1:-1]).strip()
-
-        try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError:
-            return None
-
+    def _normalize_skill_call(self, payload):
         if not isinstance(payload, dict):
             return None
 
@@ -138,6 +126,39 @@ class SimpleAgent:
             "action": action,
             "args": args,
         }
+
+    def _parse_skill_call(self, text: str):
+        if not text:
+            return None
+
+        candidate = text.strip()
+        if candidate.startswith("```") and candidate.endswith("```"):
+            lines = candidate.splitlines()
+            candidate = "\n".join(lines[1:-1]).strip()
+
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            payload = None
+
+        skill_call = self._normalize_skill_call(payload)
+        if skill_call:
+            return skill_call
+
+        # Recover embedded tool JSON from replies that include reasoning text.
+        decoder = json.JSONDecoder()
+        matches = list(re.finditer(r'\{\s*"skill"\s*:', candidate))
+        for match in reversed(matches):
+            try:
+                payload, _ = decoder.raw_decode(candidate[match.start():])
+            except json.JSONDecodeError:
+                continue
+
+            skill_call = self._normalize_skill_call(payload)
+            if skill_call:
+                return skill_call
+
+        return None
 
     def _build_tool_result_message(self, skill_result: dict):
         result_json = json.dumps(skill_result, ensure_ascii=False)

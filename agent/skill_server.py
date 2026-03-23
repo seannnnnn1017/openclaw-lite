@@ -1,5 +1,6 @@
 import logging
 import json
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -29,7 +30,8 @@ def create_app():
         )
 
     app = FastAPI(title="OpenClaw Skill Server")
-    config = Config("agent\\config\\config.json")
+    config_path = Path(__file__).resolve().parent / "config" / "config.json"
+    config = Config(str(config_path))
 
     def runtime() -> SkillRuntime:
         config.reload_if_changed()
@@ -87,4 +89,4 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("skill_server:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run("skill_server:app", host="127.0.0.1", port=8001, reload=False)

@@ -3,10 +3,10 @@ from schemas import ChatRequest
 
 
 class LMStudioClient:
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, api_key: str):
         self.client = OpenAI(
             base_url=base_url,
-            api_key="lm-studio"
+            api_key=api_key,
         )
 
     def chat(self, request: ChatRequest) -> str:

@@ -1,11 +1,14 @@
+from pathlib import Path
+
 from config_loader import Config
 from lmstudio_client import LMStudioClient
 from agent import SimpleAgent
 
 
 def main():
-    config = Config("agent\\config\\config.json")
-    client = LMStudioClient(base_url=config.base_url)
+    config_path = Path(__file__).resolve().parent / "config" / "config.json"
+    config = Config(str(config_path))
+    client = LMStudioClient(base_url=config.base_url, api_key=config.api_key)
     agent = SimpleAgent(config=config, client=client)
 
     while True:
