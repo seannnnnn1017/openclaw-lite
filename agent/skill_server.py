@@ -1,4 +1,5 @@
 import logging
+import json
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -14,6 +15,10 @@ class SkillExecuteRequest(BaseModel):
 
 
 logger = logging.getLogger("openclaw.skill_server")
+
+
+def pretty_json(data) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2)
 
 
 def create_app():
@@ -33,16 +38,19 @@ def create_app():
     @app.get("/skills")
     def list_skills():
         skills = runtime().list_skills()
-        logger.info("list_skills count=%s", len(skills))
+        logger.info("list_skills count=%s\n%s", len(skills), pretty_json({"skills": skills}))
         return {"skills": skills}
 
     @app.post("/skills/execute")
     def execute_skill(payload: SkillExecuteRequest):
+        request_payload = {
+            "skill": payload.skill,
+            "action": payload.action,
+            "args": payload.args,
+        }
         logger.info(
-            "skill_request skill=%s action=%s args=%s",
-            payload.skill,
-            payload.action,
-            payload.args,
+            "skill_request\n%s",
+            pretty_json(request_payload),
         )
         try:
             result = runtime().execute(
@@ -52,26 +60,23 @@ def create_app():
             )
         except Exception as exc:
             logger.exception(
-                "skill_failed skill=%s action=%s args=%s error=%s",
-                payload.skill,
-                payload.action,
-                payload.args,
+                "skill_failed\n%s\nerror=%s",
+                pretty_json(request_payload),
                 exc,
             )
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        logger.info(
-            "skill_success skill=%s action=%s result=%s",
-            payload.skill,
-            payload.action,
-            result,
-        )
-        return {
+        response_payload = {
             "status": "ok",
             "skill": payload.skill,
             "action": payload.action,
             "result": result,
         }
+        logger.info(
+            "skill_success\n%s",
+            pretty_json(response_payload),
+        )
+        return response_payload
 
     return app
 

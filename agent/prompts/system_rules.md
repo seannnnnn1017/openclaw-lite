@@ -16,6 +16,8 @@
 - Use `skill` for the configured skill name.
 - Use `action` for the operation to perform.
 - Put only tool arguments inside `args`.
+- After a tool result is provided, either return another valid skill JSON object if more work is needed, or answer the original user request in natural language.
+- You may use multiple tool calls in sequence when a task requires ordered steps.
 - If a request does not need a skill, answer in normal natural language.
 - If tool results are later provided, answer the original request using those results faithfully.
 - Do not invent tool output, file contents, or execution success.
