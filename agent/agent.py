@@ -13,6 +13,29 @@ class SimpleAgent:
         self.skill_client = SkillClient(base_url=config.skill_server_url)
         self.max_tool_steps = 6
 
+    def _extract_think_blocks(self, text: str):
+        if not text:
+            return "", []
+
+        think_blocks = [
+            match.group(1).strip()
+            for match in re.finditer(r"<think>(.*?)</think>", text, flags=re.DOTALL)
+            if match.group(1).strip()
+        ]
+        cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned, think_blocks
+
+    def _print_think_block(self, step: int, think_text: str):
+        cleaned = " ".join(think_text.strip().split())
+        if cleaned:
+            print(f"[THINK {step}] {cleaned}")
+
+    def _print_tool_message(self, step: int, message: str):
+        cleaned = " ".join(message.strip().split())
+        if cleaned:
+            print(f"[TOOL NOTE {step}] {cleaned}")
+
     def _summarize_tool_call(self, skill_call: dict) -> str:
         args = skill_call.get("args", {})
         parts = [
@@ -108,24 +131,37 @@ class SimpleAgent:
             Message(role="user", content=user_input),
         ]
 
-    def _normalize_skill_call(self, payload):
+    def _normalize_skill_call(self, payload, speech_text: str = ""):
         if not isinstance(payload, dict):
             return None
 
         skill = payload.get("skill")
         action = payload.get("action")
         args = payload.get("args", {})
+        message = payload.get("message", "")
 
         if not isinstance(skill, str) or not isinstance(action, str):
             return None
         if not isinstance(args, dict):
             return None
+        if not isinstance(message, str):
+            message = ""
 
-        return {
+        speech_parts = []
+        if message.strip():
+            speech_parts.append(message.strip())
+        if speech_text.strip():
+            speech_parts.append(speech_text.strip())
+
+        normalized = {
             "skill": skill,
             "action": action,
             "args": args,
         }
+        if speech_parts:
+            normalized["message"] = "\n".join(speech_parts)
+
+        return normalized
 
     def _parse_skill_call(self, text: str):
         if not text:
@@ -150,11 +186,16 @@ class SimpleAgent:
         matches = list(re.finditer(r'\{\s*"skill"\s*:', candidate))
         for match in reversed(matches):
             try:
-                payload, _ = decoder.raw_decode(candidate[match.start():])
+                payload, end = decoder.raw_decode(candidate[match.start():])
             except json.JSONDecodeError:
                 continue
 
-            skill_call = self._normalize_skill_call(payload)
+            prefix = candidate[:match.start()].strip()
+            suffix = candidate[match.start() + end:].strip()
+            speech_parts = [part for part in [prefix, suffix] if part]
+            speech_text = "\n".join(speech_parts)
+
+            skill_call = self._normalize_skill_call(payload, speech_text=speech_text)
             if skill_call:
                 return skill_call
 
@@ -186,17 +227,28 @@ class SimpleAgent:
             except Exception as e:
                 return f"[ERROR] {e}"
 
-            last_response = response
-            skill_call = self._parse_skill_call(response)
+            cleaned_response, think_blocks = self._extract_think_blocks(response)
+            for think_text in think_blocks:
+                self._print_think_block(step + 1, think_text)
+
+            visible_response = cleaned_response.strip()
+            if not visible_response and think_blocks:
+                visible_response = "[ERROR] Model returned thoughts without a final answer"
+            elif not visible_response:
+                visible_response = response.strip()
+            last_response = visible_response
+            skill_call = self._parse_skill_call(cleaned_response or response)
             if not skill_call:
-                self._append_history(user_input, response)
-                return response
+                self._append_history(user_input, visible_response)
+                return visible_response
 
             if step >= self.max_tool_steps:
                 max_step_error = "[ERROR] Reached maximum tool steps before final answer"
                 self._append_history(user_input, max_step_error)
                 return max_step_error
 
+            if skill_call.get("message"):
+                self._print_tool_message(step + 1, skill_call["message"])
             self._print_tool_call(step + 1, skill_call)
             messages.append(Message(role="assistant", content=json.dumps(skill_call, ensure_ascii=False)))
 

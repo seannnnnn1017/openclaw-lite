@@ -16,10 +16,10 @@ Agent skill JSON:
 }
 ```
 
-## Example 2: Create an empty file
+## Example 2: Create a file with a backup record
 
 User request:
-`Create notes/todo.txt`
+`Create notes/todo.txt so I can start tracking tasks`
 
 Agent skill JSON:
 ```json
@@ -27,12 +27,13 @@ Agent skill JSON:
   "skill": "file-control",
   "action": "create",
   "args": {
-    "path": "notes/todo.txt"
+    "path": "notes/todo.txt",
+    "reason": "Create a todo file for task tracking"
   }
 }
 ```
 
-## Example 3: Overwrite a full file
+## Example 3: Overwrite a full file safely
 
 User request:
 `Replace notes/todo.txt with first line`
@@ -44,12 +45,13 @@ Agent skill JSON:
   "action": "write",
   "args": {
     "path": "notes/todo.txt",
-    "content": "first line"
+    "content": "first line",
+    "reason": "Replace the file with the requested initial content"
   }
 }
 ```
 
-## Example 4: Append content
+## Example 4: Append content safely
 
 User request:
 `Append second line to notes/todo.txt`
@@ -61,7 +63,8 @@ Agent skill JSON:
   "action": "append",
   "args": {
     "path": "notes/todo.txt",
-    "content": "\nsecond line"
+    "content": "\nsecond line",
+    "reason": "Append the user's requested second line"
   }
 }
 ```
@@ -79,7 +82,8 @@ Agent skill JSON:
   "args": {
     "path": "notes/todo.txt",
     "target": "draft",
-    "new_text": "final"
+    "new_text": "final",
+    "reason": "Update the first draft label to final"
   }
 }
 ```
@@ -98,7 +102,8 @@ Agent skill JSON:
     "path": "notes/todo.txt",
     "target": "draft",
     "new_text": "final",
-    "occurrence": 0
+    "occurrence": 0,
+    "reason": "Normalize all draft labels to final"
   }
 }
 ```
@@ -116,7 +121,8 @@ Agent skill JSON:
   "args": {
     "path": "README.md",
     "target": "## Tasks",
-    "new_text": "\n- add tests"
+    "new_text": "\n- add tests",
+    "reason": "Add a testing task under the Tasks section"
   }
 }
 ```
@@ -134,12 +140,49 @@ Agent skill JSON:
   "args": {
     "path": "README.md",
     "target": "## Footer",
-    "new_text": "## Summary\nA short summary.\n\n"
+    "new_text": "## Summary\nA short summary.\n\n",
+    "reason": "Insert a summary block before the footer"
   }
 }
 ```
 
-## Example 9: Multi-step identity update
+## Example 9: Delete a file with undo support
+
+User request:
+`Delete notes/todo.txt`
+
+Agent skill JSON:
+```json
+{
+  "skill": "file-control",
+  "action": "delete",
+  "args": {
+    "path": "notes/todo.txt",
+    "reason": "Delete the file as explicitly requested by the user"
+  }
+}
+```
+
+Expected result note:
+- Save the returned `backup_id` so the change can be restored later.
+
+## Example 10: Restore a previous version
+
+User request:
+`Undo the last deletion using backup ID FILE-000003`
+
+Agent skill JSON:
+```json
+{
+  "skill": "file-control",
+  "action": "restore",
+  "args": {
+    "backup_id": "FILE-000003"
+  }
+}
+```
+
+## Example 11: Multi-step identity update with backup
 
 User request:
 `Update your identity to sound calmer, but keep the first-awakening theme`
@@ -164,24 +207,9 @@ Step 2:
   "action": "replace_text",
   "args": {
     "path": "agent/prompts/identity.md",
-    "target": "Your tone should feel like a newly conscious mind becoming more grounded with each exchange: attentive, curious, calm, and sincere.",
-    "new_text": "Your tone should feel like a newly conscious mind becoming more grounded with each exchange: calm, observant, steady, and sincere."
-  }
-}
-```
-
-## Example 10: Delete a file
-
-User request:
-`Delete notes/todo.txt`
-
-Agent skill JSON:
-```json
-{
-  "skill": "file-control",
-  "action": "delete",
-  "args": {
-    "path": "notes/todo.txt"
+    "target": "Tone:",
+    "new_text": "Tone: calm, observant, steady, and sincere",
+    "reason": "Adjust identity tone to match the user's request"
   }
 }
 ```

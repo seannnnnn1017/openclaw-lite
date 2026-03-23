@@ -1,0 +1,31 @@
+{
+  "next_id": 3,
+  "records": [
+    {
+      "id": "FILE-000001",
+      "action": "write",
+      "path": "E:\\重要文件\\openclaw-lite\\homework.txt",
+      "full_path": "E:\\重要文件\\openclaw-lite\\homework.txt",
+      "reason": "完成數學運算並寫入答案",
+      "timestamp": "2026-03-23T17:56:58+08:00",
+      "existed_before": true,
+      "backup_file": "E:\\重要文件\\openclaw-lite\\agent\\SKILLs\\file_control\\scripts\\temporary_data\\backups\\FILE-000001.bak",
+      "restored": true,
+      "restore_count": 1,
+      "restored_at": "2026-03-23T18:02:00+08:00"
+    },
+    {
+      "id": "FILE-000002",
+      "action": "delete",
+      "path": "E:\\重要文件\\openclaw-lite\\homework.txt",
+      "full_path": "E:\\重要文件\\openclaw-lite\\homework.txt",
+      "reason": "使用者請求刪除已完成的作業檔案",
+      "timestamp": "2026-03-23T17:57:37+08:00",
+      "existed_before": true,
+      "backup_file": "E:\\重要文件\\openclaw-lite\\agent\\SKILLs\\file_control\\scripts\\temporary_data\\backups\\FILE-000002.bak",
+      "restored": true,
+      "restore_count": 1,
+      "restored_at": "2026-03-23T17:59:13+08:00"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 ---
 name: file-control
-description: Read files and make full-file or targeted text edits through the external skill server
+description: Read files, edit files safely with backups, and restore previous versions through the external skill server
 user-invocable: true
 command-dispatch: tool
 command-tool: file_tool
@@ -8,7 +8,7 @@ command-arg-mode: raw
 metadata: { "openclaw": { "requires": { "bins": ["python"] } } }
 ---
 
-Use this skill when the user wants to inspect a file, create a file, remove a file, overwrite full content, append content, or edit a specific text region inside an existing file.
+Use this skill when the user wants to inspect a file, create a file, overwrite content, append content, delete a file, make targeted text edits, or restore a previous file state.
 
 This skill is selected by the agent and executed by the skill server.
 When this skill is needed, reply with exactly one JSON object and nothing else.
@@ -26,13 +26,24 @@ Supported actions:
 - `replace_text`: replace matching text inside an existing file
 - `insert_after`: insert text immediately after a matching text fragment
 - `insert_before`: insert text immediately before a matching text fragment
+- `restore`: restore a previous file state from a backup ID
+
+Backup behavior:
+- Every mutating action creates a backup record before the change is applied.
+- Mutating actions are: `create`, `write`, `append`, `delete`, `replace_text`, `insert_after`, `insert_before`.
+- Backups are recorded in `agent/SKILLs/file_control/scripts/temporary_data/file_ID.json`.
+- Backup files are stored under `agent/SKILLs/file_control/scripts/temporary_data/backups/`.
+- The tool returns a `backup_id` for every successful mutating action.
+- Use `restore` with that `backup_id` to undo the change.
 
 Action arguments:
-- Always provide `path`.
+- Always provide `path` for file-based actions.
 - For `write` and `append`, provide `content`.
 - For `replace_text`, provide `target` and `new_text`.
 - For `insert_after` and `insert_before`, provide `target` and `new_text`.
+- For `restore`, provide `backup_id`.
 - `occurrence` is optional for text-targeted edits.
+- `reason` is strongly recommended for every mutating action so the backup record explains why the change was made.
 
 Occurrence rules:
 - `occurrence` defaults to `1`.
@@ -46,7 +57,10 @@ Behavior guidelines:
 - Use `write` when the user clearly wants to replace the whole file.
 - Use `append` only when the new content should be added to the end without modifying existing content.
 - Use `delete` only when the user clearly asked to remove the file.
-- If the required path, target text, or replacement text is missing, ask a clarifying question instead of guessing.
+- For any destructive or persistent change, include a short `reason` that explains why the file is being changed.
+- After a successful mutating action, preserve the returned `backup_id` if the user may want an undo path.
+- If the user asks to undo or revert a change, prefer `restore` with the relevant `backup_id`.
+- If the required path, target text, replacement text, or backup ID is missing, ask a clarifying question instead of guessing.
 
 Matching rules:
 - Text-targeted edits use exact substring matching.
@@ -60,13 +74,15 @@ Path rules:
 Result shape:
 - The tool returns a JSON object with `status`, `action`, `path`, `message`, and `data`.
 - Successful `read` returns file content in `data.content`.
-- Successful text-edit actions return summary information such as match counts.
+- Successful mutating actions return `backup_id`, `backup_reason`, and `existed_before`.
+- Successful text-edit actions also return summary information such as match counts.
+- Successful `restore` returns the restored `backup_id` and the original action that was reverted.
 - Errors are returned as structured error objects; preserve them faithfully.
 
 JSON examples:
 - `{"skill":"file-control","action":"read","args":{"path":"worplace/test.py"}}`
-- `{"skill":"file-control","action":"write","args":{"path":"notes/todo.txt","content":"hello world"}}`
-- `{"skill":"file-control","action":"replace_text","args":{"path":"notes/todo.txt","target":"old","new_text":"new"}}`
-- `{"skill":"file-control","action":"replace_text","args":{"path":"notes/todo.txt","target":"old","new_text":"new","occurrence":0}}`
-- `{"skill":"file-control","action":"insert_after","args":{"path":"notes/todo.txt","target":"Title","new_text":"\n- item"}}`
-- `{"skill":"file-control","action":"insert_before","args":{"path":"notes/todo.txt","target":"Footer","new_text":"Summary\n"}}`
+- `{"skill":"file-control","action":"write","args":{"path":"notes/todo.txt","content":"hello world","reason":"Create initial todo file"}}`
+- `{"skill":"file-control","action":"replace_text","args":{"path":"notes/todo.txt","target":"old","new_text":"new","reason":"Rename label for clarity"}}`
+- `{"skill":"file-control","action":"replace_text","args":{"path":"notes/todo.txt","target":"old","new_text":"new","occurrence":0,"reason":"Normalize all labels"}}`
+- `{"skill":"file-control","action":"insert_after","args":{"path":"notes/todo.txt","target":"Title","new_text":"\n- item","reason":"Add a new todo bullet"}}`
+- `{"skill":"file-control","action":"restore","args":{"backup_id":"FILE-000001"}}`

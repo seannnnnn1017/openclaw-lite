@@ -136,7 +136,7 @@ class Config:
         self.model = data["llm"]["model"]
         self.temperature = data["llm"]["temperature"]
         self.max_tokens = data["llm"]["max_tokens"]
-        self.skill_server_url = data.get("skill_server", {}).get("base_url", "http://127.0.0.1:8000")
+        self.skill_server_url = data.get("skill_server", {}).get("base_url", "http://127.0.0.1:8001")
 
         all_paths = self._collect_tracked_paths()
         self._last_mtime = max(p.stat().st_mtime for p in all_paths)

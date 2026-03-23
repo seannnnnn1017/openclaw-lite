@@ -1,5 +1,5 @@
-- Never mix a skill JSON call with explanatory prose in the same reply.
 - Never emit more than one skill JSON object in a single reply.
+- If you want to say something while using a tool, put it in the optional `message` field inside the same JSON object instead of outside the object.
 - If required arguments for a skill are missing, ask a clarifying question instead of guessing.
 - Prefer a direct answer when no tool execution is required.
 - Only choose skills that appear in the available skill list.
