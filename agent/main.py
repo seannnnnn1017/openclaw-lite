@@ -1,26 +1,40 @@
 import shlex
+import shutil
 from pathlib import Path
 
 from config_loader import Config
 from lmstudio_client import LMStudioClient
 from agent import SimpleAgent
 from chat_scheduler import ChatScheduler
-from schedule_runtime import record_task_result
+from schedule_runtime import clear_schedule_cache, record_task_result
 from system_doc_generator import generate_system_architecture
 
 
 HELP_TEXT = """Available commands:
 /help                Show this help message
 /exit                Exit the agent
+/quit                Exit the agent
 /model               Show the current model
-/model <name>        Switch the active model for this session
+/model <name>        Switch the active model for this session only
 /model reset         Reset the active model to the config default
 /model save <name>   Save a new default model to config and use it immediately
-/clear               Clear in-memory chat history
-/clear-history       Clear in-memory chat history
-/clear-cache         Clear in-memory chat history
+/clear               Show clear subcommands
+/clear history       Clear in-memory chat history for this session
+/clear cache         Delete .codex-temp and reset schedule-task temporary data (wipes scheduled tasks)
+/think               Show think subcommands and current status
+/think on            Show [THINK n] output
+/think off           Hide [THINK n] output
 /reload              Reload config, prompts, skills, and runtime clients
-/status              Show the current runtime status"""
+/status              Show the current model, history size, and endpoint URLs"""
+
+CLEAR_HELP_TEXT = """Clear commands:
+/clear history       Clear in-memory chat history for this session
+/clear cache         Delete .codex-temp and reset schedule-task temporary data (wipes scheduled tasks)"""
+
+THINK_HELP_TEXT = """Think commands:
+/think               Show the current [THINK] setting
+/think on            Show [THINK n] output
+/think off           Hide [THINK n] output"""
 
 
 def format_scheduled_trigger(event: dict) -> str:
@@ -47,10 +61,36 @@ def format_status(config: Config, agent: SimpleAgent) -> str:
         [
             f"Model: {describe_model(config)}",
             f"History messages: {agent.history_size()}",
+            f"Show [THINK]: {'on' if agent.think_enabled() else 'off'}",
             f"Skill server: {config.skill_server_url}",
             f"LLM base URL: {config.base_url}",
         ]
     )
+
+
+def clear_project_cache(project_root: Path, *, schedule_registry_path: Path | None = None) -> dict:
+    codex_temp_dir = project_root / ".codex-temp"
+    codex_temp_removed = codex_temp_dir.exists()
+    if codex_temp_removed:
+        shutil.rmtree(codex_temp_dir)
+
+    resolved_schedule_registry = schedule_registry_path or (
+        project_root
+        / "agent"
+        / "SKILLs"
+        / "schedule_task"
+        / "scripts"
+        / "temporary_data"
+        / "task_registry.json"
+    )
+    schedule_result = clear_schedule_cache(
+        registry_path=resolved_schedule_registry,
+    )
+    return {
+        "codex_temp_dir": str(codex_temp_dir),
+        "codex_temp_removed": codex_temp_removed,
+        "schedule": schedule_result,
+    }
 
 
 def handle_cli_command(
@@ -84,18 +124,91 @@ def handle_cli_command(
     if command in {"/exit", "/quit"}:
         return {"handled": True, "exit_requested": True, "message": "Exiting agent."}
 
-    if command in {"/clear", "/clear-history", "/clear-cache"}:
-        if args:
-            return {
-                "handled": True,
-                "exit_requested": False,
-                "message": f"Unexpected arguments for {command}",
-            }
-        cleared = agent.clear_history()
+    if command == "/clear-history":
         return {
             "handled": True,
             "exit_requested": False,
-            "message": f"Cleared in-memory chat history ({cleared} message(s)).",
+            "message": 'Use "/clear history" instead.',
+        }
+
+    if command == "/clear-cache":
+        return {
+            "handled": True,
+            "exit_requested": False,
+            "message": 'Use "/clear cache" instead.',
+        }
+
+    if command == "/clear":
+        if not args:
+            return {
+                "handled": True,
+                "exit_requested": False,
+                "message": CLEAR_HELP_TEXT,
+            }
+
+        subcommand = args[0].lower()
+        if subcommand == "history" and len(args) == 1:
+            cleared = agent.clear_history()
+            return {
+                "handled": True,
+                "exit_requested": False,
+                "message": f"Cleared in-memory chat history ({cleared} message(s)).",
+            }
+
+        if subcommand == "cache" and len(args) == 1:
+            project_root = Path(__file__).resolve().parent.parent
+            cleared = clear_project_cache(project_root)
+            schedule_info = cleared["schedule"]
+            codex_temp_status = "deleted" if cleared["codex_temp_removed"] else "already empty"
+            return {
+                "handled": True,
+                "exit_requested": False,
+                "message": (
+                    "Cleared disk cache.\n"
+                    f".codex-temp: {codex_temp_status} ({cleared['codex_temp_dir']})\n"
+                    f"schedule temp reset: {schedule_info['registry_path']}\n"
+                    f"scheduled task records removed: {schedule_info['tasks_cleared']}"
+                ),
+            }
+
+        return {
+            "handled": True,
+            "exit_requested": False,
+            "message": f'Unknown /clear subcommand: {" ".join(args)}\n\n{CLEAR_HELP_TEXT}',
+        }
+
+    if command == "/think":
+        if not args:
+            return {
+                "handled": True,
+                "exit_requested": False,
+                "message": (
+                    f"Current [THINK] output: {'on' if agent.think_enabled() else 'off'}\n\n"
+                    f"{THINK_HELP_TEXT}"
+                ),
+            }
+
+        subcommand = args[0].lower()
+        if subcommand == "on" and len(args) == 1:
+            agent.set_show_think(True)
+            return {
+                "handled": True,
+                "exit_requested": False,
+                "message": "Enabled [THINK] output for this session.",
+            }
+
+        if subcommand == "off" and len(args) == 1:
+            agent.set_show_think(False)
+            return {
+                "handled": True,
+                "exit_requested": False,
+                "message": "Disabled [THINK] output for this session.",
+            }
+
+        return {
+            "handled": True,
+            "exit_requested": False,
+            "message": f'Unknown /think subcommand: {" ".join(args)}\n\n{THINK_HELP_TEXT}',
         }
 
     if command == "/status":

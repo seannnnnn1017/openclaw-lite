@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import threading
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -70,6 +71,43 @@ def _save_registry(registry: dict, registry_path: str | Path | None = None):
         json.dumps(registry, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def clear_schedule_cache(*, registry_path: str | Path | None = None) -> dict:
+    path = _registry_path(registry_path)
+    temp_dir = path.parent
+
+    with REGISTRY_LOCK:
+        tasks_cleared = 0
+        next_id_before = 1
+        if path.exists():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    tasks = raw.get("tasks", [])
+                    if isinstance(tasks, list):
+                        tasks_cleared = len(tasks)
+                    next_id_before = raw.get("next_id", 1)
+            except Exception:
+                pass
+
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        reset_registry = _default_registry()
+        path.write_text(
+            json.dumps(reset_registry, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        return {
+            "temp_dir": str(temp_dir),
+            "registry_path": str(path),
+            "tasks_cleared": tasks_cleared,
+            "next_id_before": next_id_before,
+            "next_id_after": reset_registry["next_id"],
+        }
 
 
 def _bool(value) -> bool:

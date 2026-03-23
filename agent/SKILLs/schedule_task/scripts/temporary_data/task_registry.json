@@ -1,5 +1,5 @@
 {
-  "next_id": 5,
+  "next_id": 6,
   "tasks": [
     {
       "id": "TASK-000001",
@@ -152,6 +152,41 @@
       "last_run_at": "2026-03-23T23:36:05+08:00",
       "created_at": "2026-03-23T23:34:53+08:00",
       "updated_at": "2026-03-23T23:36:38+08:00",
+      "timeout_seconds": null
+    },
+    {
+      "id": "TASK-000005",
+      "task_name": "30-second-time-display",
+      "name": "30-second-time-display",
+      "short_name": "30-second-time-display",
+      "task_prompt": "每半分鐘顯示當前時間並回報在聊天室（系統限制為整數分鐘，實際執行為每分鐘）",
+      "task": "",
+      "prompt": "",
+      "command": "",
+      "arguments": "",
+      "task_run": "",
+      "schedule_type": "minute",
+      "start_date": "2026-03-24",
+      "start_time": "00:00",
+      "modifier": 1,
+      "days_of_week": [],
+      "enabled": false,
+      "completed": false,
+      "deleted": true,
+      "deleted_at": "2026-03-24T01:30:31+08:00",
+      "next_run_at": "",
+      "pending_now": false,
+      "pending_requested_at": "",
+      "reason": "應用戶請求刪除時間顯示任務",
+      "last_status": "ok",
+      "last_response": "🕐 **當前時間顯示**：2026-03-24 01:30:00 +08:00\n\n✅ **任務執行狀態**：已成功觸發並回報至聊天室\n\n⚠️ **提醒**：系統間隔限制為整數分鐘，實際執行頻率為「每分鐘」而非半分鐘。如需調整請重新設定任務配置。",
+      "last_error": "",
+      "last_trigger": "delete",
+      "last_scheduled_for": "2026-03-24T01:30:00+08:00",
+      "last_dispatch_at": "2026-03-24T01:30:00+08:00",
+      "last_run_at": "2026-03-24T01:30:09+08:00",
+      "created_at": "2026-03-24T01:29:40+08:00",
+      "updated_at": "2026-03-24T01:30:31+08:00",
       "timeout_seconds": null
     }
   ]

@@ -14,6 +14,7 @@ class SimpleAgent:
         self.history = []
         self.history_lock = threading.Lock()
         self.run_lock = threading.RLock()
+        self.show_think = True
         self.skill_client = SkillClient(base_url=config.skill_server_url)
         self.max_tool_steps = 6
 
@@ -31,6 +32,8 @@ class SimpleAgent:
         return cleaned, think_blocks
 
     def _print_think_block(self, step: int, think_text: str):
+        if not self.show_think:
+            return
         cleaned = " ".join(think_text.strip().split())
         if cleaned:
             print(f"[THINK {step}] {cleaned}")
@@ -131,6 +134,12 @@ class SimpleAgent:
     def history_size(self) -> int:
         with self.history_lock:
             return len(self.history)
+
+    def set_show_think(self, enabled: bool):
+        self.show_think = bool(enabled)
+
+    def think_enabled(self) -> bool:
+        return self.show_think
 
     def refresh_runtime_clients(self):
         self.client = LMStudioClient(
