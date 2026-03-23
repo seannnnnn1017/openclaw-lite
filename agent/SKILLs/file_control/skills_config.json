@@ -1,0 +1,13 @@
+{
+  "skills": [
+    {
+      "name": "file-control",
+      "enabled": true,
+      "path": "file_control",
+      "tool": {
+        "type": "python_function",
+        "module": "agent.SKILLs.file_control.scripts.file_tool",
+        "function": "run"
+      }
+    }]
+}

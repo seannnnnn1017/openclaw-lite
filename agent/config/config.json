@@ -5,6 +5,9 @@
     "temperature": 0.7,
     "max_tokens": 512
   },
+  "skill_server": {
+    "base_url": "http://127.0.0.1:8000"
+  },
   "prompt_paths": {
     "identity": "prompts/identity.md",
     "system_rules": "prompts/system_rules.md",
