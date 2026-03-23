@@ -1,0 +1,39 @@
+{
+  "next_id": 2,
+  "tasks": [
+    {
+      "id": "TASK-000001",
+      "task_name": "smoke/minutely",
+      "name": "smoke/minutely",
+      "short_name": "minutely",
+      "task_prompt": "???????",
+      "task": "",
+      "prompt": "",
+      "command": "",
+      "arguments": "",
+      "task_run": "",
+      "schedule_type": "minute",
+      "start_date": "2026-03-23",
+      "start_time": "23:23",
+      "modifier": 1,
+      "days_of_week": [],
+      "enabled": true,
+      "completed": false,
+      "deleted": false,
+      "deleted_at": "",
+      "next_run_at": "2026-03-23T23:27:00+08:00",
+      "pending_now": false,
+      "pending_requested_at": "",
+      "reason": "due smoke",
+      "last_status": "",
+      "last_response": "",
+      "last_error": "",
+      "last_trigger": "",
+      "last_scheduled_for": "",
+      "last_dispatch_at": "2026-03-23T23:26:17+08:00",
+      "last_run_at": "",
+      "created_at": "2026-03-23T23:26:17+08:00",
+      "updated_at": "2026-03-23T23:26:17+08:00"
+    }
+  ]
+}

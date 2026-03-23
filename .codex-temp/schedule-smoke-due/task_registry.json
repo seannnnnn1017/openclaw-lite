@@ -1,0 +1,36 @@
+{
+  "next_id": 2,
+  "tasks": [
+    {
+      "id": "TASK-000001",
+      "created_at": "2026-03-23T22:45:48+08:00",
+      "task_name": "smoke-due",
+      "short_name": "smoke-due",
+      "command": "powershell.exe",
+      "arguments": "-NoProfile -Command \"Write-Output due-ok\"",
+      "task_run": "powershell.exe -NoProfile -Command \"Write-Output due-ok\"",
+      "schedule_type": "minute",
+      "start_date": "2026-03-23",
+      "start_time": "22:45",
+      "modifier": 1,
+      "days_of_week": [],
+      "timeout_seconds": 300,
+      "enabled": true,
+      "completed": false,
+      "deleted": false,
+      "deleted_at": null,
+      "reason": "due smoke test",
+      "last_trigger": "scheduled",
+      "last_run_at": "2026-03-23T22:45:48+08:00",
+      "last_manual_run_at": "",
+      "last_status": "ok",
+      "last_exit_code": 0,
+      "last_stdout": "due-ok\n",
+      "last_stderr": "",
+      "last_duration_seconds": 0.268,
+      "last_scheduled_for": "2026-03-23T22:45:46+08:00",
+      "updated_at": "2026-03-23T22:45:48+08:00",
+      "next_run_at": "2026-03-23T22:46:00+08:00"
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 
 This file is auto-generated when the agent starts.
 
-Generated at: 2026-03-23T17:54:42+08:00
+Generated at: 2026-03-24T00:10:37+08:00
 
 Project root: E:\重要文件\openclaw-lite
 
@@ -11,11 +11,13 @@ Agent root: E:\重要文件\openclaw-lite\agent
 ## Core Runtime Files
 - agent/main.py: terminal entrypoint that starts the agent loop
 - agent/agent.py: main reasoning loop, tool-call parsing, and multi-step tool execution
+- agent/chat_scheduler.py: background scheduler that claims due tasks and dispatches them back into the agent
 - agent/config_loader.py: loads config, prompts, and skills
 - agent/lmstudio_client.py: sends chat requests to the configured LLM endpoint
 - agent/skill_client.py: sends tool execution JSON to the skill server
 - agent/skill_server.py: FastAPI server that executes skills
 - agent/skill_runtime.py: skill registry and tool loader
+- agent/schedule_runtime.py: shared agent-native schedule registry, timing logic, and dispatch metadata
 - agent/schemas.py: shared message and prompt schemas
 - agent/config/config.json: model, prompt, and skill-server configuration
 
@@ -32,6 +34,7 @@ Agent root: E:\重要文件\openclaw-lite\agent
 
 ## Enabled Skills
 - file-control: directory=agent/SKILLs/file_control, tool=agent.SKILLs.file_control.scripts.file_tool:run
+- schedule-task: directory=agent/SKILLs/schedule_task, tool=agent.SKILLs.schedule_task.scripts.schedule_tool:run
 
 ## Execution Flow
 - User input enters agent/main.py.

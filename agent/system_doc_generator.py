@@ -31,11 +31,13 @@ def generate_system_architecture(config) -> Path:
     core_runtime = [
         "agent/main.py: terminal entrypoint that starts the agent loop",
         "agent/agent.py: main reasoning loop, tool-call parsing, and multi-step tool execution",
+        "agent/chat_scheduler.py: background scheduler that claims due tasks and dispatches them back into the agent",
         "agent/config_loader.py: loads config, prompts, and skills",
         "agent/lmstudio_client.py: sends chat requests to the configured LLM endpoint",
         "agent/skill_client.py: sends tool execution JSON to the skill server",
         "agent/skill_server.py: FastAPI server that executes skills",
         "agent/skill_runtime.py: skill registry and tool loader",
+        "agent/schedule_runtime.py: shared agent-native schedule registry, timing logic, and dispatch metadata",
         "agent/schemas.py: shared message and prompt schemas",
         "agent/config/config.json: model, prompt, and skill-server configuration",
     ]

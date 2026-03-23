@@ -1,0 +1,14 @@
+{
+  "skills": [
+    {
+      "name": "schedule-task",
+      "enabled": true,
+      "path": "schedule_task",
+      "tool": {
+        "type": "python_function",
+        "module": "agent.SKILLs.schedule_task.scripts.schedule_tool",
+        "function": "run"
+      }
+    }
+  ]
+}

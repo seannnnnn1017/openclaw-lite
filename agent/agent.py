@@ -1,6 +1,8 @@
 import json
 import re
+import threading
 
+from lmstudio_client import LMStudioClient
 from schemas import Message, ChatRequest
 from skill_client import SkillClient
 
@@ -10,6 +12,8 @@ class SimpleAgent:
         self.config = config
         self.client = client
         self.history = []
+        self.history_lock = threading.Lock()
+        self.run_lock = threading.RLock()
         self.skill_client = SkillClient(base_url=config.skill_server_url)
         self.max_tool_steps = 6
 
@@ -106,11 +110,34 @@ class SimpleAgent:
         print(f"[TOOL RESULT {step}] {self._summarize_tool_result(skill_result)}\n")
 
     def _append_history(self, user_input: str, response: str):
-        self.history.append(Message(role="user", content=user_input))
-        self.history.append(Message(role="assistant", content=response))
+        with self.history_lock:
+            self.history.append(Message(role="user", content=user_input))
+            self.history.append(Message(role="assistant", content=response))
+            if len(self.history) > 10:
+                self.history = self.history[-10:]
 
-        if len(self.history) > 10:
-            self.history = self.history[-10:]
+    def append_assistant_event(self, content: str):
+        with self.history_lock:
+            self.history.append(Message(role="assistant", content=content))
+            if len(self.history) > 10:
+                self.history = self.history[-10:]
+
+    def clear_history(self) -> int:
+        with self.history_lock:
+            cleared = len(self.history)
+            self.history = []
+            return cleared
+
+    def history_size(self) -> int:
+        with self.history_lock:
+            return len(self.history)
+
+    def refresh_runtime_clients(self):
+        self.client = LMStudioClient(
+            base_url=self.config.base_url,
+            api_key=self.config.api_key,
+        )
+        self.skill_client = SkillClient(base_url=self.config.skill_server_url)
 
     def _chat(self, messages) -> str:
         request = ChatRequest(
@@ -122,12 +149,14 @@ class SimpleAgent:
         return self.client.chat(request)
 
     def _build_base_messages(self, user_input: str):
+        with self.history_lock:
+            history_snapshot = list(self.history)
         return [
             Message(
                 role="system",
                 content=self.config.agent_layers.build_system_prompt(),
             ),
-            *self.history,
+            *history_snapshot,
             Message(role="user", content=user_input),
         ]
 
@@ -214,60 +243,61 @@ class SimpleAgent:
         )
 
     def run(self, user_input: str) -> str:
-        if hasattr(self.config, "reload_if_changed"):
-            self.config.reload_if_changed()
-            self.skill_client = SkillClient(base_url=self.config.skill_server_url)
+        with self.run_lock:
+            if hasattr(self.config, "reload_if_changed"):
+                self.config.reload_if_changed()
+                self.refresh_runtime_clients()
 
-        messages = self._build_base_messages(user_input)
-        last_response = ""
+            messages = self._build_base_messages(user_input)
+            last_response = ""
 
-        for step in range(self.max_tool_steps + 1):
-            try:
-                response = self._chat(messages)
-            except Exception as e:
-                return f"[ERROR] {e}"
+            for step in range(self.max_tool_steps + 1):
+                try:
+                    response = self._chat(messages)
+                except Exception as e:
+                    return f"[ERROR] {e}"
 
-            cleaned_response, think_blocks = self._extract_think_blocks(response)
-            for think_text in think_blocks:
-                self._print_think_block(step + 1, think_text)
+                cleaned_response, think_blocks = self._extract_think_blocks(response)
+                for think_text in think_blocks:
+                    self._print_think_block(step + 1, think_text)
 
-            visible_response = cleaned_response.strip()
-            if not visible_response and think_blocks:
-                visible_response = "[ERROR] Model returned thoughts without a final answer"
-            elif not visible_response:
-                visible_response = response.strip()
-            last_response = visible_response
-            skill_call = self._parse_skill_call(cleaned_response or response)
-            if not skill_call:
-                self._append_history(user_input, visible_response)
-                return visible_response
+                visible_response = cleaned_response.strip()
+                if not visible_response and think_blocks:
+                    visible_response = "[ERROR] Model returned thoughts without a final answer"
+                elif not visible_response:
+                    visible_response = response.strip()
+                last_response = visible_response
+                skill_call = self._parse_skill_call(cleaned_response or response)
+                if not skill_call:
+                    self._append_history(user_input, visible_response)
+                    return visible_response
 
-            if step >= self.max_tool_steps:
-                max_step_error = "[ERROR] Reached maximum tool steps before final answer"
-                self._append_history(user_input, max_step_error)
-                return max_step_error
+                if step >= self.max_tool_steps:
+                    max_step_error = "[ERROR] Reached maximum tool steps before final answer"
+                    self._append_history(user_input, max_step_error)
+                    return max_step_error
 
-            if skill_call.get("message"):
-                self._print_tool_message(step + 1, skill_call["message"])
-            self._print_tool_call(step + 1, skill_call)
-            messages.append(Message(role="assistant", content=json.dumps(skill_call, ensure_ascii=False)))
+                if skill_call.get("message"):
+                    self._print_tool_message(step + 1, skill_call["message"])
+                self._print_tool_call(step + 1, skill_call)
+                messages.append(Message(role="assistant", content=json.dumps(skill_call, ensure_ascii=False)))
 
-            try:
-                skill_result = self.skill_client.execute(
-                    skill=skill_call["skill"],
-                    action=skill_call["action"],
-                    args=skill_call["args"],
-                )
-            except Exception as e:
-                skill_result = {
-                    "status": "error",
-                    "skill": skill_call["skill"],
-                    "action": skill_call["action"],
-                    "error": str(e),
-                }
+                try:
+                    skill_result = self.skill_client.execute(
+                        skill=skill_call["skill"],
+                        action=skill_call["action"],
+                        args=skill_call["args"],
+                    )
+                except Exception as e:
+                    skill_result = {
+                        "status": "error",
+                        "skill": skill_call["skill"],
+                        "action": skill_call["action"],
+                        "error": str(e),
+                    }
 
-            self._print_tool_result(step + 1, skill_result)
-            messages.append(self._build_tool_result_message(skill_result))
+                self._print_tool_result(step + 1, skill_result)
+                messages.append(self._build_tool_result_message(skill_result))
 
-        self._append_history(user_input, last_response)
-        return last_response
+            self._append_history(user_input, last_response)
+            return last_response

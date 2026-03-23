@@ -1,5 +1,5 @@
 {
-  "next_id": 3,
+  "next_id": 5,
   "records": [
     {
       "id": "FILE-000001",
@@ -26,6 +26,30 @@
       "restored": true,
       "restore_count": 1,
       "restored_at": "2026-03-23T17:59:13+08:00"
+    },
+    {
+      "id": "FILE-000003",
+      "action": "delete",
+      "path": "E:\\重要文件\\openclaw-lite\\homework.txt",
+      "full_path": "E:\\重要文件\\openclaw-lite\\homework.txt",
+      "reason": "User requested to remove homework file",
+      "timestamp": "2026-03-23T22:16:51+08:00",
+      "existed_before": true,
+      "backup_file": "E:\\重要文件\\openclaw-lite\\agent\\SKILLs\\file_control\\scripts\\temporary_data\\backups\\FILE-000003.bak",
+      "restored": false,
+      "restore_count": 0
+    },
+    {
+      "id": "FILE-000004",
+      "action": "create",
+      "path": "E:\\scripts\\time-quote.ps1",
+      "full_path": "E:\\scripts\\time-quote.ps1",
+      "reason": "Create script to display current time and random motivational quote every minute",
+      "timestamp": "2026-03-23T22:59:29+08:00",
+      "existed_before": false,
+      "backup_file": null,
+      "restored": false,
+      "restore_count": 0
     }
   ]
 }

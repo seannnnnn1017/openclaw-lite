@@ -11,6 +11,8 @@ class Config:
         self._last_mtime = None
         self._prompt_file_paths = []
         self._skill_file_paths = []
+        self._model_override = None
+        self.default_model = ""
         self.skills = []
         self._load()
 
@@ -133,7 +135,8 @@ class Config:
 
         self.base_url = data["llm"]["base_url"]
         self.api_key = data["llm"].get("api_key", "lm-studio")
-        self.model = data["llm"]["model"]
+        self.default_model = data["llm"]["model"]
+        self.model = self._model_override or self.default_model
         self.temperature = data["llm"]["temperature"]
         self.max_tokens = data["llm"]["max_tokens"]
         self.skill_server_url = data.get("skill_server", {}).get("base_url", "http://127.0.0.1:8001")
@@ -148,3 +151,34 @@ class Config:
         if latest_mtime != self._last_mtime:
             print("[CONFIG OR PROMPT RELOADED]")
             self._load()
+
+    def reload_now(self):
+        self._load()
+
+    def set_runtime_model(self, model_name: str):
+        cleaned = model_name.strip()
+        if not cleaned:
+            raise ValueError("Model name cannot be empty")
+        self._model_override = cleaned
+        self.model = cleaned
+
+    def reset_runtime_model(self):
+        self._model_override = None
+        self.model = self.default_model
+
+    def has_runtime_model_override(self) -> bool:
+        return bool(self._model_override)
+
+    def save_model(self, model_name: str):
+        cleaned = model_name.strip()
+        if not cleaned:
+            raise ValueError("Model name cannot be empty")
+
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data["llm"]["model"] = cleaned
+        self.path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self._model_override = None
+        self._load()
