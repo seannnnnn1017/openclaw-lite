@@ -8,6 +8,15 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 TEMP_DIR = SCRIPT_DIR / "temporary_data"
 BACKUP_DIR = TEMP_DIR / "backups"
 INDEX_FILE = TEMP_DIR / "file_ID.json"
+PROTECTED_MUTATING_ACTIONS = {
+    "create",
+    "write",
+    "append",
+    "delete",
+    "replace_text",
+    "insert_after",
+    "insert_before",
+}
 
 
 def safe_path(path: str) -> str:
@@ -186,6 +195,28 @@ def ensure_file_target(action: str, path: str, full_path: str):
     return None
 
 
+def _is_relative_to(path: Path, base: Path) -> bool:
+    try:
+        path.resolve().relative_to(base.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def ensure_backup_storage_not_mutated(action: str, path: str, full_path: str):
+    if action not in PROTECTED_MUTATING_ACTIONS:
+        return None
+
+    if _is_relative_to(Path(full_path), TEMP_DIR):
+        return error(
+            action,
+            path,
+            "Permission denied: file-control cannot modify its own backup storage.",
+        )
+
+    return None
+
+
 def run(
     action: str,
     path: str = "",
@@ -201,6 +232,10 @@ def run(
             return restore_backup(backup_id)
 
         full_path = safe_path(path)
+        backup_storage_error = ensure_backup_storage_not_mutated(action, path, full_path)
+        if backup_storage_error:
+            return backup_storage_error
+
         target_error = ensure_file_target(action, path, full_path)
         if target_error:
             return target_error

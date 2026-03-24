@@ -9,6 +9,18 @@
   "skill_server": {
     "base_url": "http://127.0.0.1:8001"
   },
+  "telegram": {
+    "enabled": true,
+    "bot_token": "8509934662:AAG21ntJJmifuXU0AiBEIqL9Nl9fMt5mQLM",
+    "poll_timeout_seconds": 20,
+    "retry_delay_seconds": 5,
+    "skip_pending_updates_on_start": true,
+    "allowed_chat_ids": [],
+    "allowed_usernames": [
+      "op23756778"
+    ],
+    "state_path": "data/system/telegram_bridge_state.json"
+  },
   "prompt_paths": {
     "identity": "prompts/identity.md",
     "system_rules": "prompts/system_rules.md",

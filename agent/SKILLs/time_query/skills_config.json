@@ -1,0 +1,14 @@
+{
+  "skills": [
+    {
+      "name": "time-query",
+      "enabled": true,
+      "path": "time_query",
+      "tool": {
+        "type": "python_function",
+        "module": "agent.SKILLs.time_query.scripts.time_tool",
+        "function": "run"
+      }
+    }
+  ]
+}

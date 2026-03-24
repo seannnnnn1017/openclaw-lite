@@ -16,6 +16,7 @@ Important behavior:
 - The tool only stores timing and task metadata.
 - When a task is due, the scheduler sends the stored `task_prompt` back into the agent.
 - The agent then decides how to execute it, including calling `file-control` or other skills.
+- When Telegram bridge delivery targets are available, scheduled-task system/tool output and the final answer are sent to Telegram as well as the terminal.
 - If the user needs tasks to keep running after the agent is closed, this skill is not enough.
 
 This skill is selected by the agent and executed by the skill server.

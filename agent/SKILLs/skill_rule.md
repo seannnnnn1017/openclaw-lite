@@ -28,6 +28,7 @@ Current files in this area include:
 - `agent/SKILLs/skill_rule.md`
 - `agent/SKILLs/file_control/`
 - `agent/SKILLs/schedule_task/`
+- `agent/SKILLs/time_query/`
 
 ## 3. Required SKILL Folder Structure
 
@@ -56,6 +57,7 @@ The current implemented SKILLs are:
 
 `agent/SKILLs/file_control/`
 `agent/SKILLs/schedule_task/`
+`agent/SKILLs/time_query/`
 
 Important files for `file_control`:
 - `agent/SKILLs/file_control/SKILL.md`: prompt-facing skill description
@@ -72,6 +74,12 @@ Important files for `schedule_task`:
 - `agent/SKILLs/schedule_task/scripts/schedule_tool.py`: skill wrapper entrypoint
 - `agent/schedule_runtime.py`: shared schedule registry and agent-dispatch runtime
 - `agent/SKILLs/schedule_task/scripts/temporary_data/task_registry.json`: managed task registry
+
+Important files for `time_query`:
+- `agent/SKILLs/time_query/SKILL.md`: prompt-facing skill description
+- `agent/SKILLs/time_query/examples.md`: usage examples for the model
+- `agent/SKILLs/time_query/skills_config.json`: runtime registration
+- `agent/SKILLs/time_query/scripts/time_tool.py`: actual tool implementation for current-time and timezone-conversion queries
 
 ## 5. skills_config.json Rules
 
@@ -242,15 +250,16 @@ Current behavior:
 3. Parse the reply
 4. If it is normal text, return it to the user
 5. If it is SKILL JSON:
-   - show optional `[TOOL NOTE]`
-   - show `[TOOL CALL]`
+   - show optional `[TOOL] step=n note: ...`
+   - show `[TOOL] step=n call: ...`
    - call the skill server
-   - show `[TOOL RESULT]`
+   - show `[TOOL] step=n result: ...`
    - feed the result back into the model
    - continue until no more tool call appears or max steps are reached
 
 Additional current behavior:
-- `<think>...</think>` blocks are extracted and shown as `[THINK]`
+- `<think>...</think>` blocks are extracted and shown as `[THINK n]`
+- config or prompt reload notices are shown as `[SYSTEM]`
 - the agent currently limits tool steps with `max_tool_steps`
 
 ## 12. Skill Server Logic
@@ -384,6 +393,9 @@ Current safety logic:
 - backup records are indexed in `temporary_data/file_ID.json`
 - backup files are stored in `temporary_data/backups/`
 - `restore` can restore by `backup_id`
+- backup files are persistent and are not deleted automatically
+- backup storage is outside normal file-control scope and should not be modified by this skill
+- mutating file-control actions that target `temporary_data/` should return permission denied
 
 Current mutating actions that create backups:
 - `create`
@@ -398,14 +410,16 @@ Recommended prompt behavior for file-control:
 - use `read` before making localized edits when unsure
 - include `reason` for any mutating action
 - retain `backup_id` when the user may later want to undo
+- do not treat routine edits, restore, or unrelated cache cleanup as permission to delete backup files
 
 ## 16. Logging Rules
 
 Current terminal-side logs in the agent:
 - `[THINK n]`
-- `[TOOL NOTE n]`
-- `[TOOL CALL n]`
-- `[TOOL RESULT n]`
+- `[TOOL] step=n note: ...`
+- `[TOOL] step=n call: ...`
+- `[TOOL] step=n result: ...`
+- `[SYSTEM] ...`
 
 Current server-side logs:
 - full `skill_request`

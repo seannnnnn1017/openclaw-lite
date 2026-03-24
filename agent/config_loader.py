@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 from schemas import AgentLayers
@@ -18,6 +19,43 @@ class Config:
 
     def _read_md(self, path: Path) -> str:
         return path.read_text(encoding="utf-8").strip()
+
+    def _parse_int_list(self, value) -> list[int]:
+        if value in (None, "", []):
+            return []
+        if isinstance(value, str):
+            tokens = [part.strip() for part in value.replace(",", " ").split() if part.strip()]
+        elif isinstance(value, (list, tuple, set)):
+            tokens = [str(part).strip() for part in value if str(part).strip()]
+        else:
+            return []
+
+        parsed = []
+        for token in tokens:
+            try:
+                parsed.append(int(token))
+            except ValueError:
+                continue
+        return parsed
+
+    def _parse_string_list(self, value) -> list[str]:
+        if value in (None, "", []):
+            return []
+        if isinstance(value, str):
+            items = [part.strip() for part in value.replace(",", " ").split() if part.strip()]
+        elif isinstance(value, (list, tuple, set)):
+            items = [str(part).strip() for part in value if str(part).strip()]
+        else:
+            return []
+
+        normalized = []
+        seen = set()
+        for item in items:
+            key = item.lstrip("@").casefold()
+            if key and key not in seen:
+                seen.add(key)
+                normalized.append(item.lstrip("@"))
+        return normalized
 
     def _parse_skill_markdown(self, skill_md_path: Path) -> tuple[dict, str]:
         raw_text = skill_md_path.read_text(encoding="utf-8").strip()
@@ -141,6 +179,25 @@ class Config:
         self.max_tokens = data["llm"]["max_tokens"]
         self.skill_server_url = data.get("skill_server", {}).get("base_url", "http://127.0.0.1:8001")
 
+        telegram = data.get("telegram", {})
+        self.telegram_enabled = bool(telegram.get("enabled", False))
+        self.telegram_bot_token = os.getenv("OPENCLAW_TELEGRAM_BOT_TOKEN") or telegram.get("bot_token", "")
+        self.telegram_poll_timeout_seconds = int(telegram.get("poll_timeout_seconds", 20))
+        self.telegram_retry_delay_seconds = float(telegram.get("retry_delay_seconds", 5))
+        self.telegram_skip_pending_updates_on_start = bool(
+            telegram.get("skip_pending_updates_on_start", True)
+        )
+        self.telegram_allowed_chat_ids = self._parse_int_list(telegram.get("allowed_chat_ids", []))
+        self.telegram_allowed_usernames = self._parse_string_list(
+            telegram.get("allowed_usernames", [])
+        )
+        telegram_state_path = telegram.get("state_path", "").strip()
+        self.telegram_state_path = (
+            str((self.base_dir / telegram_state_path).resolve())
+            if telegram_state_path
+            else str((self.base_dir / "data" / "system" / "telegram_bridge_state.json").resolve())
+        )
+
         all_paths = self._collect_tracked_paths()
         self._last_mtime = max(p.stat().st_mtime for p in all_paths)
 
@@ -149,8 +206,9 @@ class Config:
         latest_mtime = max(p.stat().st_mtime for p in all_paths)
 
         if latest_mtime != self._last_mtime:
-            print("[CONFIG OR PROMPT RELOADED]")
             self._load()
+            return True
+        return False
 
     def reload_now(self):
         self._load()

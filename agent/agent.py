@@ -5,16 +5,17 @@ import threading
 from lmstudio_client import LMStudioClient
 from schemas import Message, ChatRequest
 from skill_client import SkillClient
+from terminal_display import TerminalDisplay
 
 
 class SimpleAgent:
-    def __init__(self, config, client):
+    def __init__(self, config, client, display=None):
         self.config = config
         self.client = client
+        self.display = display or TerminalDisplay()
         self.history = []
         self.history_lock = threading.Lock()
         self.run_lock = threading.RLock()
-        self.show_think = True
         self.skill_client = SkillClient(base_url=config.skill_server_url)
         self.max_tool_steps = 6
 
@@ -32,16 +33,14 @@ class SimpleAgent:
         return cleaned, think_blocks
 
     def _print_think_block(self, step: int, think_text: str):
-        if not self.show_think:
-            return
         cleaned = " ".join(think_text.strip().split())
         if cleaned:
-            print(f"[THINK {step}] {cleaned}")
+            self.display.think(step, cleaned)
 
     def _print_tool_message(self, step: int, message: str):
         cleaned = " ".join(message.strip().split())
         if cleaned:
-            print(f"[TOOL NOTE {step}] {cleaned}")
+            self.display.tool_note(step, cleaned)
 
     def _summarize_tool_call(self, skill_call: dict) -> str:
         args = skill_call.get("args", {})
@@ -107,10 +106,10 @@ class SimpleAgent:
         return " ".join(parts)
 
     def _print_tool_call(self, step: int, skill_call: dict):
-        print(f"\n[TOOL CALL {step}] {self._summarize_tool_call(skill_call)}")
+        self.display.tool_call(step, self._summarize_tool_call(skill_call))
 
     def _print_tool_result(self, step: int, skill_result: dict):
-        print(f"[TOOL RESULT {step}] {self._summarize_tool_result(skill_result)}\n")
+        self.display.tool_result(step, self._summarize_tool_result(skill_result))
 
     def _append_history(self, user_input: str, response: str):
         with self.history_lock:
@@ -136,10 +135,13 @@ class SimpleAgent:
             return len(self.history)
 
     def set_show_think(self, enabled: bool):
-        self.show_think = bool(enabled)
+        self.display.set_enabled("think", enabled)
 
     def think_enabled(self) -> bool:
-        return self.show_think
+        return self.display.is_enabled("think")
+
+    def display_category_enabled(self, category: str) -> bool:
+        return self.display.is_enabled(category)
 
     def refresh_runtime_clients(self):
         self.client = LMStudioClient(
@@ -254,8 +256,10 @@ class SimpleAgent:
     def run(self, user_input: str) -> str:
         with self.run_lock:
             if hasattr(self.config, "reload_if_changed"):
-                self.config.reload_if_changed()
-                self.refresh_runtime_clients()
+                reloaded = bool(self.config.reload_if_changed())
+                if reloaded:
+                    self.refresh_runtime_clients()
+                    self.display.system("Config, prompts, or skills changed. Runtime reloaded.")
 
             messages = self._build_base_messages(user_input)
             last_response = ""

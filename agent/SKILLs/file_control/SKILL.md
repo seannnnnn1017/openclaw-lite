@@ -35,6 +35,10 @@ Backup behavior:
 - Backup files are stored under `agent/SKILLs/file_control/scripts/temporary_data/backups/`.
 - The tool returns a `backup_id` for every successful mutating action.
 - Use `restore` with that `backup_id` to undo the change.
+- Backup files are persistent and are not deleted automatically.
+- Do not delete or prune backup files as part of normal file-control operations.
+- Backup storage is outside normal file-control scope and should not be modified by this skill.
+- If the agent targets `agent/SKILLs/file_control/scripts/temporary_data/`, the tool should return permission denied.
 
 Action arguments:
 - Always provide `path` for file-based actions.
@@ -60,6 +64,8 @@ Behavior guidelines:
 - For any destructive or persistent change, include a short `reason` that explains why the file is being changed.
 - After a successful mutating action, preserve the returned `backup_id` if the user may want an undo path.
 - If the user asks to undo or revert a change, prefer `restore` with the relevant `backup_id`.
+- Never treat ordinary file edits, restore operations, or cache cleanup as permission to remove file-control backups.
+- Never use `delete`, `write`, `append`, `replace_text`, `insert_after`, `insert_before`, or `create` against the file-control backup store.
 - If the required path, target text, replacement text, or backup ID is missing, ask a clarifying question instead of guessing.
 
 Matching rules:
