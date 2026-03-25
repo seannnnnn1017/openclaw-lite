@@ -4,6 +4,11 @@ from pathlib import Path
 
 from schemas import AgentLayers
 
+try:
+    from secret_store import SECRET_CONFIG_PATH, load_secret_config
+except ModuleNotFoundError:
+    from agent.secret_store import SECRET_CONFIG_PATH, load_secret_config
+
 
 class Config:
     def __init__(self, path: str):
@@ -12,6 +17,7 @@ class Config:
         self._last_mtime = None
         self._prompt_file_paths = []
         self._skill_file_paths = []
+        self._secret_file_paths = []
         self._model_override = None
         self.default_model = ""
         self.skills = []
@@ -143,10 +149,22 @@ class Config:
 
     def _collect_tracked_paths(self) -> list[Path]:
         skill_config_paths = list(self.base_dir.glob("SKILLs/**/skills_config.json"))
-        return [self.path] + self._prompt_file_paths + self._skill_file_paths + skill_config_paths
+        return (
+            [self.path]
+            + self._prompt_file_paths
+            + self._skill_file_paths
+            + self._secret_file_paths
+            + skill_config_paths
+        )
 
     def _load(self):
         data = json.loads(self.path.read_text(encoding="utf-8"))
+        secrets = load_secret_config()
+        llm_secrets = secrets.get("llm", {}) if isinstance(secrets.get("llm"), dict) else {}
+        telegram_secrets = (
+            secrets.get("telegram", {}) if isinstance(secrets.get("telegram"), dict) else {}
+        )
+        self._secret_file_paths = [SECRET_CONFIG_PATH] if SECRET_CONFIG_PATH.exists() else []
 
         prompt_paths = data["prompt_paths"]
         identity_path = self.base_dir / prompt_paths["identity"]
@@ -172,7 +190,11 @@ class Config:
         )
 
         self.base_url = data["llm"]["base_url"]
-        self.api_key = data["llm"].get("api_key", "lm-studio")
+        self.api_key = (
+            os.getenv("OPENCLAW_LLM_API_KEY")
+            or llm_secrets.get("api_key")
+            or data["llm"].get("api_key", "lm-studio")
+        )
         self.default_model = data["llm"]["model"]
         self.model = self._model_override or self.default_model
         self.temperature = data["llm"]["temperature"]
@@ -181,7 +203,11 @@ class Config:
 
         telegram = data.get("telegram", {})
         self.telegram_enabled = bool(telegram.get("enabled", False))
-        self.telegram_bot_token = os.getenv("OPENCLAW_TELEGRAM_BOT_TOKEN") or telegram.get("bot_token", "")
+        self.telegram_bot_token = (
+            os.getenv("OPENCLAW_TELEGRAM_BOT_TOKEN")
+            or telegram_secrets.get("bot_token")
+            or telegram.get("bot_token", "")
+        )
         self.telegram_poll_timeout_seconds = int(telegram.get("poll_timeout_seconds", 20))
         self.telegram_retry_delay_seconds = float(telegram.get("retry_delay_seconds", 5))
         self.telegram_skip_pending_updates_on_start = bool(

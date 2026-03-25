@@ -108,6 +108,12 @@ def _skill_specific_notes(skill_name: str) -> list[str]:
             "Backup storage is protected from ordinary skill edits and returns permission denied if targeted.",
             "Backup cleanup is not part of normal file-control operations.",
         ]
+    if skill_name == "notion-basic":
+        return [
+            "Uses the Notion REST API and reads credentials from env vars or `agent/data/system/secrets.local.json`.",
+            "Page content operations use Notion's markdown endpoints for full-page replace, append, and targeted search-and-replace.",
+            "Delete is implemented as moving a page to trash; the Notion API does not permanently delete pages.",
+        ]
     if skill_name == "schedule-task":
         return [
             "The scheduler stores timing plus `task_prompt`; it does not run raw shell commands directly.",
@@ -127,6 +133,11 @@ def _skill_state_paths(skill_name: str, project_root: Path) -> list[str]:
         return [
             f"`{_relative_path(project_root / 'agent/SKILLs/file_control/scripts/temporary_data/file_ID.json', project_root)}`: backup index",
             f"`{_relative_path(project_root / 'agent/SKILLs/file_control/scripts/temporary_data/backups', project_root)}/`: backup payloads",
+        ]
+    if skill_name == "notion-basic":
+        return [
+            f"`{_relative_path(project_root / 'agent/data/system/secrets.example.json', project_root)}`: example shared secret configuration",
+            f"`{_relative_path(project_root / 'agent/data/system/secrets.local.json', project_root)}`: ignored local shared secrets for LLM, Telegram, and Notion",
         ]
     if skill_name == "schedule-task":
         return [
@@ -235,7 +246,9 @@ def generate_system_architecture(config) -> Path:
     ]
 
     state_lines = [
-        f"`{_relative_path(config.path, project_root)}`: persisted configuration for model, endpoints, Telegram settings, and prompt paths",
+        f"`{_relative_path(config.path, project_root)}`: persisted non-secret configuration for model selection, endpoints, Telegram settings, and prompt paths",
+        f"`{_relative_path(agent_root / 'data/system/secrets.example.json', project_root)}`: example shared secret layout",
+        f"`{_relative_path(agent_root / 'data/system/secrets.local.json', project_root)}`: ignored local shared secrets for LLM, Telegram, and Notion",
         f"`{telegram_state_rel}`: Telegram bridge state (`offset` plus remembered delivery chats)",
         f"`{_relative_path(agent_root / 'SKILLs/schedule_task/scripts/temporary_data/task_registry.json', project_root)}`: scheduled task registry and last-run metadata",
         f"`{_relative_path(agent_root / 'SKILLs/file_control/scripts/temporary_data/file_ID.json', project_root)}`: file-control backup index",
@@ -269,6 +282,7 @@ def generate_system_architecture(config) -> Path:
         "`/clear cache` deletes only `.codex-temp` directories; it does not delete scheduled tasks or file-control backups.",
         "`file-control` protects its own backup store and returns permission denied if the agent targets `agent/SKILLs/file_control/scripts/temporary_data/`.",
         "`schedule-task` is agent-native, not OS-native. Tasks stop running when the agent process is not running.",
+        "Secrets should live in `agent/data/system/secrets.local.json` or environment variables, not in tracked config files.",
         "This file is safe to use as a repository map, but it is derived from the current config and enabled skills, so disabling a skill changes future output.",
     ]
 

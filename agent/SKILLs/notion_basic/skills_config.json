@@ -1,0 +1,14 @@
+{
+  "skills": [
+    {
+      "name": "notion-basic",
+      "enabled": true,
+      "path": "notion_basic",
+      "tool": {
+        "type": "python_function",
+        "module": "agent.SKILLs.notion_basic.scripts.notion_tool",
+        "function": "run"
+      }
+    }
+  ]
+}

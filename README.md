@@ -303,16 +303,32 @@ python agent\main.py
 
 主要設定檔：
 - `agent/config/config.json`
+- `agent/data/system/secrets.example.json`
+- `agent/data/system/secrets.local.json` (git ignored)
+
+## Secret Management
+
+- Keep secrets in `agent/data/system/secrets.local.json` or environment variables.
+- `secrets.local.json` is the shared location for the LLM API key, Telegram bot token, and Notion API key.
+- Environment variables override the local secret file.
+- Supported environment variables:
+  - `OPENCLAW_LLM_API_KEY`
+  - `OPENCLAW_TELEGRAM_BOT_TOKEN`
+  - `OPENCLAW_NOTION_API_KEY`
+  - `OPENCLAW_NOTION_PARENT_PAGE_ID`
+  - `OPENCLAW_NOTION_PARENT_PAGE_URL`
+  - `OPENCLAW_NOTION_VERSION`
+- Keep tracked config files non-secret. `agent/config/config.json` should only store ordinary runtime settings.
 
 目前欄位：
 - `llm.base_url`
-- `llm.api_key`
+- `llm.api_key` (prefer `secrets.local.json` or `OPENCLAW_LLM_API_KEY`)
 - `llm.model`
 - `llm.temperature`
 - `llm.max_tokens`
 - `skill_server.base_url`
 - `telegram.enabled`
-- `telegram.bot_token`
+- `telegram.bot_token` (prefer `secrets.local.json` or `OPENCLAW_TELEGRAM_BOT_TOKEN`)
 - `telegram.poll_timeout_seconds`
 - `telegram.retry_delay_seconds`
 - `telegram.skip_pending_updates_on_start`

@@ -27,6 +27,7 @@ All SKILL definitions live under:
 Current files in this area include:
 - `agent/SKILLs/skill_rule.md`
 - `agent/SKILLs/file_control/`
+- `agent/SKILLs/notion_basic/`
 - `agent/SKILLs/schedule_task/`
 - `agent/SKILLs/time_query/`
 
@@ -56,6 +57,7 @@ agent/SKILLs/<skill_folder>/references/
 The current implemented SKILLs are:
 
 `agent/SKILLs/file_control/`
+`agent/SKILLs/notion_basic/`
 `agent/SKILLs/schedule_task/`
 `agent/SKILLs/time_query/`
 
@@ -74,6 +76,14 @@ Important files for `schedule_task`:
 - `agent/SKILLs/schedule_task/scripts/schedule_tool.py`: skill wrapper entrypoint
 - `agent/schedule_runtime.py`: shared schedule registry and agent-dispatch runtime
 - `agent/SKILLs/schedule_task/scripts/temporary_data/task_registry.json`: managed task registry
+
+Important files for `notion_basic`:
+- `agent/SKILLs/notion_basic/SKILL.md`: prompt-facing skill description
+- `agent/SKILLs/notion_basic/examples.md`: usage examples for the model
+- `agent/SKILLs/notion_basic/skills_config.json`: runtime registration
+- `agent/SKILLs/notion_basic/scripts/notion_tool.py`: Notion REST API tool implementation for page-level CRUD and markdown content operations
+- `agent/data/system/secrets.example.json`: example local secret layout for shared LLM, Telegram, and Notion credentials
+- `agent/data/system/secrets.local.json`: ignored local secret store used by config loading and skills
 
 Important files for `time_query`:
 - `agent/SKILLs/time_query/SKILL.md`: prompt-facing skill description

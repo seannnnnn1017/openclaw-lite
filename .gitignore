@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+agent/data/system/secrets.local.json
+agent/data/system/notion_skill_config.local.json
+agent/SKILLs/notion_basic/scripts/temporary_data/
