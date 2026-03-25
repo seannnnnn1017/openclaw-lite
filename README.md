@@ -1,21 +1,23 @@
 # OpenClaw Lite
 
-Telegram note: standard Telegram chats now include `[SYSTEM]` and `[TOOL]` trace lines before the final answer.
-Scheduled-task note: when Telegram delivery targets are known, scheduled task output is sent to both the terminal and Telegram.
+Telegram note: tool 使用會即時推送到 Telegram；同一個 tool 只佔一則訊息，完成後直接 edit 成結果，並支援 `展開` / `收合` 查看細節。
+Scheduled-task note: Telegram 上的排程推送會附 `編輯` / `刪除` inline 按鈕；`編輯` 目前支援改日期、改時間、改內容。
 
-OpenClaw Lite 是一個在 terminal 中運作的本地 agent。它透過 OpenAI-compatible chat API 與模型對話，並把檔案操作、排程、時間查詢等能力委派給 FastAPI skill server。
+OpenClaw Lite 是一個在 terminal 中運作的本地 agent。它透過 OpenAI-compatible chat API 與模型對話，並把檔案操作、Notion、排程、時間查詢等能力委派給 FastAPI skill server。
 
 目前系統已支援：
 - 多步 tool-use
 - prompt / skill / config 熱重載
 - agent-native 排程
+- Telegram bridge：live tool streaming、inline callbacks、訊息 edit
+- Notion page / database / row 操作與 architecture cache
 - terminal 顯示分類：`[THINK]`、`[TOOL]`、`[SYSTEM]`
 - CLI 指令管理：model、cache、task、status
 
 ## 架構概覽
 
 - `agent/main.py`
-  Terminal 入口、slash commands、scheduler 啟動點
+  Terminal 入口、slash commands、scheduler 啟動點、Telegram inline action router
 - `agent/agent.py`
   LLM 對話主循環、tool JSON 解析、多步 skill 執行
 - `agent/skill_server.py`
@@ -25,23 +27,27 @@ OpenClaw Lite 是一個在 terminal 中運作的本地 agent。它透過 OpenAI-
 - `agent/config_loader.py`
   載入 `config.json`、prompts、SKILL docs
 - `agent/terminal_display.py`
-  統一處理 `[THINK]`、`[TOOL]`、`[SYSTEM]`、`Agent:`、`[COMMAND]`
+  統一處理 `[THINK]`、`[TOOL]`、`[SYSTEM]`、`Agent:`、`[COMMAND]`，並提供 Telegram live tool event capture
 - `agent/chat_scheduler.py`
   背景輪詢到期任務
 - `agent/schedule_runtime.py`
   排程 registry、到期判斷、dispatch metadata
 - `agent/telegram_bridge.py`
-  Telegram Bot API long polling bridge，負責收送訊息與 chat session 管理
+  Telegram Bot API long polling bridge，負責收送訊息、callback query、message edit 與 chat session 管理
 - `agent/data/system/system_architecture.md`
-  啟動時自動生成的系統總覽
+  啟動時與 `/reload` 自動生成的系統總覽
 
 ## Prompt Layers
 
-系統 prompt 由下列檔案組成：
+系統 prompt 組成順序：
 - `agent/prompts/identity.md`
 - `agent/prompts/system_rules.md`
 - `agent/prompts/boundaries.md`
 - 所有啟用中的 `agent/SKILLs/*/SKILL.md`
+
+補充：
+- `agent/prompts/identity.md` 是實際使用中的 identity prompt
+- `identity.md` 是 repo 根目錄的 quick mirror，方便快速查看
 
 ## 目前 Skills
 
@@ -79,7 +85,49 @@ OpenClaw Lite 是一個在 terminal 中運作的本地 agent。它透過 OpenAI-
 - 如果 AI 嘗試對 `temporary_data/` 做 `create/write/append/delete/replace/insert`，工具會直接回傳 `Permission denied`
 - 備份儲存區不屬於一般 file-control 編輯範圍
 
-### 2. `schedule-task`
+### 2. `notion-basic`
+
+用途：
+- 讀取 Notion page / database / data source / row
+- 建立與更新 page、database、data source、row
+- 查詢 database / data source rows
+- 同步 Notion 結構到本地 architecture cache
+- 用 cache 快速定位 page / row / database
+
+支援 action：
+- `read_page`
+- `create_page`
+- `write_page`
+- `append_page`
+- `replace_text`
+- `delete_page`
+- `restore_page`
+- `read_database`
+- `read_data_source`
+- `query_database`
+- `query_data_source`
+- `create_database`
+- `create_data_source`
+- `update_data_source`
+- `create_row`
+- `update_row`
+- `delete_row`
+- `restore_row`
+- `read_architecture_cache`
+- `sync_architecture`
+
+architecture cache：
+- 快取檔：`agent/SKILLs/notion_basic/scripts/temporary_data/notion_architecture.json`
+- agent 每次啟動時都會先把這份 cache 標成 `stale`
+- 成功的 Notion 寫入操作也會把 cache 標成 `stale`
+- 只有跑 `sync_architecture` 後才會回到 `fresh`
+
+建議用法：
+- 找 Notion page / database / row 位置時，先用 `read_architecture_cache`
+- cache miss 或 cache stale，再跑 `sync_architecture`
+- 外部直接改 Notion 後，如果要依賴本地結構，也應重新同步
+
+### 3. `schedule-task`
 
 這是 agent-native scheduler，不是 Windows Task Scheduler。
 
@@ -111,16 +159,23 @@ OpenClaw Lite 是一個在 terminal 中運作的本地 agent。它透過 OpenAI-
 1. skill 只儲存排程時間與 `task_prompt`
 2. 到時間後 `chat_scheduler.py` claim 任務
 3. scheduler 把 `task_prompt` 丟回 agent
-4. agent 再自行決定要不要呼叫 `file-control` 或其他 skill
+4. agent 再自行決定要不要呼叫 `file-control`、`notion-basic` 或其他 skill
 
 限制：
 - 只有 agent 開著時任務才會跑
 - agent 關閉時不會像系統排程一樣持續執行
 
+Telegram 整合：
+- 排程推送到 Telegram 時，通知訊息下方會附 `編輯` / `刪除` inline 按鈕
+- `刪除` 會直接刪除該任務
+- `編輯` 目前支援修改 `start_time`、`start_date`、`task_prompt`
+- 點選欄位後，下一則 Telegram 文字訊息會被當作新值
+- 輸入 `/cancel` 可取消這次編輯
+
 任務 registry：
 - `agent/SKILLs/schedule_task/scripts/temporary_data/task_registry.json`
 
-### 3. `time-query`
+### 4. `time-query`
 
 用途：
 - 查現在時間 / 日期
@@ -143,10 +198,12 @@ OpenClaw Lite 是一個在 terminal 中運作的本地 agent。它透過 OpenAI-
 
 運作方式：
 1. `telegram_bridge.py` 用 long polling 呼叫 `getUpdates`
-2. 收到文字訊息後，依 `chat_id` 建立或重用一個獨立 `SimpleAgent` session
-3. 如果訊息是 slash command，就走同一套 command handler
-4. 如果是一般文字，就交給 `agent.run(...)`
-5. 回覆再用 `sendMessage` 傳回 Telegram
+2. 同時接收 `message` 與 `callback_query`
+3. 收到文字訊息後，依 `chat_id` 建立或重用一個獨立 `SimpleAgent` session
+4. 如果訊息是 slash command，就走同一套 command handler
+5. 如果是一般文字，就交給 `agent.run(...)`
+6. tool progress 會即時送到 Telegram，final answer 再單獨回傳
+7. inline 按鈕事件交給 `main.py` 的 callback handler 處理
 
 特性：
 - 每個 Telegram chat 有獨立 history，不會直接和 terminal session 混在一起
@@ -154,10 +211,16 @@ OpenClaw Lite 是一個在 terminal 中運作的本地 agent。它透過 OpenAI-
 - 支援長訊息自動分段
 - 支援 state file，避免重啟後重複處理同一批 update
 - 可用 allowlist 限制 `chat_id` 或 `username`
+- 支援 inline keyboard / callback query
+- tool 訊息會以簡短格式顯示：`[TOOL] skill.action`
+- 同一個 tool 的 result 會直接 edit 原訊息，不額外新增第二則 result 訊息
+- tool 訊息可用 `展開` / `收合` 查看或隱藏細節
+- scheduled task 通知可用 `編輯` / `刪除` 按鈕直接操作
 
 建議：
 - 如果 bot 不是私用，請設定 `allowed_chat_ids` 或 `allowed_usernames`
 - 如果 token 曾經進過公開 repo，應立即到 BotFather 旋轉 token
+- 如果只有設定 `allowed_usernames`，bot 需要先收到該 chat 的訊息，之後才能主動推送排程結果
 
 ## CLI Commands
 
@@ -213,7 +276,7 @@ OpenClaw Lite 是一個在 terminal 中運作的本地 agent。它透過 OpenAI-
 - `/think off`
   隱藏 `[THINK n]`
 - `/reload`
-  重載 config / prompts / skills / runtime clients
+  重載 config / prompts / skills / runtime clients，並重新生成 `agent/data/system/system_architecture.md`
 - `/status`
   顯示 model、history size、display categories、endpoint URLs
 
@@ -250,6 +313,7 @@ OpenClaw Lite 是一個在 terminal 中運作的本地 agent。它透過 OpenAI-
    - skill server 執行 tool
    - 結果回給 agent
    - agent 持續推理直到輸出最終回答
+   - 如果請求來自 Telegram，tool progress 會在過程中即時推送到 Telegram
 
 ## 排程流程
 
@@ -259,7 +323,8 @@ OpenClaw Lite 是一個在 terminal 中運作的本地 agent。它透過 OpenAI-
 4. 到期後產生 dispatch event
 5. `main.py` 收到 event 後呼叫 `agent.run(dispatch_prompt)`
 6. agent 依照 `task_prompt` 完成任務
-7. 結果顯示在聊天室，並寫回任務執行狀態
+7. 結果顯示在 terminal，並寫回任務執行狀態
+8. 若可推送到 Telegram，會先送出任務通知，再即時送 tool progress，最後回 final answer
 
 ## 安裝需求
 
@@ -349,16 +414,22 @@ python agent\main.py
   file-control 備份索引
 - `agent/SKILLs/file_control/scripts/temporary_data/backups/`
   file-control 備份檔
+- `agent/SKILLs/notion_basic/scripts/temporary_data/notion_architecture.json`
+  Notion architecture cache；包含 `fresh/stale` 狀態
 - `agent/SKILLs/schedule_task/scripts/temporary_data/task_registry.json`
   正式排程 registry
 - `agent/data/system/telegram_bridge_state.json`
   Telegram update offset state
+- `agent/prompts/identity.md`
+  目前實際使用中的 identity prompt
+- `identity.md`
+  `agent/prompts/identity.md` 的 repo 根目錄鏡像
 - `.codex-temp/`
   專案根目錄快取
 - `agent/.codex-temp/`
   agent 子目錄快取 / 測試沙盒
 - `agent/data/system/system_architecture.md`
-  啟動時自動生成的系統總覽
+  啟動時與 `/reload` 自動生成的系統總覽
 
 ## 使用範例
 
@@ -366,6 +437,14 @@ python agent\main.py
 
 ```text
 You: 幫我讀 README.md
+```
+
+Notion：
+
+```text
+You: 幫我找 Tasks database 在哪裡
+You: 幫我同步 Notion 架構
+You: 幫我建立一個 Notion row 記錄今天的進度
 ```
 
 建立排程：
@@ -390,6 +469,8 @@ Telegram -> 直接傳訊息給 bot
 /task list
 台北現在幾點
 幫我讀 README.md
+點排程通知下面的 編輯 / 刪除
+點 tool 訊息下面的 展開 / 收合
 ```
 
 查時間：
@@ -406,7 +487,8 @@ You: 把 2026-03-24 14:30 的台北時間換成 UTC
 - agent 每一步只期望一個 tool JSON object
 - 某些模型在長 history 下仍可能變不穩
 - `file-control` 備份儲存區不可由一般 skill 修改
-- Telegram bridge 目前只處理文字訊息
+- Telegram bridge 支援文字訊息與 inline callback；圖片、語音、檔案等非文字輸入仍不支援
+- Notion architecture cache 只能保證反映最近一次 `sync_architecture`；如果外部直接改了 Notion，仍需要重新同步
 
 ## 補充
 

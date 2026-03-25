@@ -10,6 +10,7 @@ class TelegramBridge:
         *,
         bot_token: str,
         handle_message,
+        handle_callback_query=None,
         display,
         state_path: str,
         poll_timeout_seconds: int = 20,
@@ -20,6 +21,7 @@ class TelegramBridge:
     ):
         self.bot_token = (bot_token or "").strip()
         self.handle_message = handle_message
+        self.handle_callback_query = handle_callback_query
         self.display = display
         self.state_path = Path(state_path).expanduser().resolve()
         self.poll_timeout_seconds = max(int(poll_timeout_seconds or 20), 1)
@@ -149,7 +151,7 @@ class TelegramBridge:
             "getUpdates",
             {
                 "timeout": 0,
-                "allowed_updates": ["message"],
+                "allowed_updates": ["message", "callback_query"],
             },
         )
         if updates:
@@ -203,36 +205,95 @@ class TelegramBridge:
             chunks.append(remaining)
         return chunks
 
-    def send_text(self, chat_id: int, text: str):
-        for chunk in self._split_text(text):
-            self._api_call(
+    def send_text(self, chat_id: int, text: str, *, reply_markup: dict | None = None):
+        chunks = self._split_text(text)
+        results = []
+        for index, chunk in enumerate(chunks):
+            payload = {
+                "chat_id": int(chat_id),
+                "text": chunk,
+            }
+            if index == 0 and reply_markup is not None:
+                payload["reply_markup"] = reply_markup
+            result = self._api_call(
                 "sendMessage",
-                {
-                    "chat_id": int(chat_id),
-                    "text": chunk,
-                },
+                payload,
             )
+            if isinstance(result, dict):
+                results.append(result)
+        return results
 
-    def broadcast_text(self, text: str, *, chat_ids=None) -> dict:
+    def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        reply_markup: dict | None = None,
+    ):
+        payload = {
+            "chat_id": int(chat_id),
+            "message_id": int(message_id),
+            "text": str(text or ""),
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        self._api_call("editMessageText", payload)
+
+    def answer_callback_query(
+        self,
+        callback_query_id: str,
+        *,
+        text: str = "",
+        show_alert: bool = False,
+    ):
+        payload = {"callback_query_id": str(callback_query_id)}
+        if text:
+            payload["text"] = str(text)
+        if show_alert:
+            payload["show_alert"] = True
+        self._api_call("answerCallbackQuery", payload)
+
+    def broadcast_text(self, text: str, *, chat_ids=None, reply_markup: dict | None = None) -> dict:
         targets = sorted({int(chat_id) for chat_id in (chat_ids or self.delivery_chat_ids())})
         sent_chat_ids = []
         errors = []
+        deliveries = []
 
         for chat_id in targets:
             try:
-                self.send_text(chat_id, text)
+                messages = self.send_text(chat_id, text, reply_markup=reply_markup)
                 sent_chat_ids.append(chat_id)
+                message_ids = [
+                    int(item.get("message_id"))
+                    for item in messages
+                    if isinstance(item, dict) and item.get("message_id") is not None
+                ]
+                deliveries.append(
+                    {
+                        "chat_id": chat_id,
+                        "message_id": message_ids[0] if message_ids else None,
+                        "message_ids": message_ids,
+                    }
+                )
             except Exception as exc:
                 errors.append({"chat_id": chat_id, "error": str(exc)})
 
         return {
             "target_count": len(targets),
             "sent_chat_ids": sent_chat_ids,
+            "deliveries": deliveries,
             "errors": errors,
         }
 
     def _process_update(self, update: dict):
         update_id = int(update.get("update_id", 0))
+        callback_query = update.get("callback_query") or {}
+        callback_message = callback_query.get("message") or {}
+        callback_chat = callback_message.get("chat") or {}
+        callback_user = callback_query.get("from") or {}
+        callback_chat_id = callback_chat.get("id")
+        callback_username = str(callback_user.get("username", "")).strip()
         message = update.get("message") or {}
         chat = message.get("chat") or {}
         user = message.get("from") or {}
@@ -242,6 +303,39 @@ class TelegramBridge:
 
         self._offset = update_id + 1
         self._save_state()
+
+        if callback_query:
+            if callback_chat_id is None:
+                return
+
+            if not self._is_allowed(callback_chat_id, callback_username):
+                self.display.system(
+                    "Telegram bridge rejected unauthorized callback "
+                    f"chat {callback_chat_id} username={callback_username or '-'}."
+                )
+                return
+
+            self._remember_chat(int(callback_chat_id), callback_username)
+
+            if self.handle_callback_query:
+                self.handle_callback_query(
+                    {
+                        "chat_id": int(callback_chat_id),
+                        "chat_type": str(callback_chat.get("type", "")),
+                        "message_id": callback_message.get("message_id"),
+                        "message_text": str(callback_message.get("text", "")),
+                        "callback_query_id": str(callback_query.get("id", "")),
+                        "data": str(callback_query.get("data", "")),
+                        "username": callback_username,
+                        "user_id": callback_user.get("id"),
+                        "display_name": str(
+                            callback_user.get("first_name")
+                            or callback_chat.get("title")
+                            or callback_chat_id
+                        ),
+                    }
+                )
+            return
 
         if chat_id is None:
             return
@@ -262,6 +356,7 @@ class TelegramBridge:
             "chat_id": int(chat_id),
             "chat_type": str(chat.get("type", "")),
             "username": username,
+            "user_id": user.get("id"),
             "display_name": str(user.get("first_name") or chat.get("title") or chat_id),
             "text": text,
             "message_id": message.get("message_id"),
@@ -275,7 +370,7 @@ class TelegramBridge:
             try:
                 payload = {
                     "timeout": self.poll_timeout_seconds,
-                    "allowed_updates": ["message"],
+                    "allowed_updates": ["message", "callback_query"],
                 }
                 if self._offset is not None:
                     payload["offset"] = self._offset

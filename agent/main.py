@@ -1,5 +1,6 @@
 import shlex
 import shutil
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -7,10 +8,19 @@ from config_loader import Config
 from lmstudio_client import LMStudioClient
 from agent import SimpleAgent
 from chat_scheduler import ChatScheduler
-from schedule_runtime import delete_task, list_tasks, record_task_result
+from schedule_runtime import create_task, delete_task, list_tasks, record_task_result
 from system_doc_generator import generate_system_architecture
 from terminal_display import TerminalDisplay
 from telegram_bridge import TelegramBridge
+
+try:
+    from agent.SKILLs.notion_basic.scripts.notion_tool import (
+        mark_architecture_cache_stale_on_agent_startup,
+    )
+except ModuleNotFoundError:
+    from SKILLs.notion_basic.scripts.notion_tool import (
+        mark_architecture_cache_stale_on_agent_startup,
+    )
 
 
 HELP_TEXT = """Available commands:
@@ -49,6 +59,9 @@ def format_scheduled_trigger(event: dict) -> str:
     name = event.get("short_name") or event.get("task_name") or "scheduled-task"
     trigger = event.get("trigger", "scheduled")
     parts = [f"Scheduled task triggered: {name}", f"trigger={trigger}"]
+    task_id = str(event.get("task_id", "")).strip()
+    if task_id:
+        parts.append(f"id={task_id}")
     scheduled_for = str(event.get("scheduled_for", "")).strip()
     if scheduled_for:
         parts.append(f"scheduled_for={scheduled_for}")
@@ -199,6 +212,191 @@ def _format_task_list(tasks: list[dict]) -> str:
             )
         )
     return "\n".join(lines)
+
+
+def _format_task_days(task: dict) -> str:
+    days = [str(day).strip() for day in (task.get("days_of_week") or []) if str(day).strip()]
+    return ",".join(days) if days else "-"
+
+
+def _format_task_summary(task: dict) -> str:
+    return "\n".join(
+        [
+            f"id: {str(task.get('id', '')).strip() or '-'}",
+            f"name: {str(task.get('task_name', '')).strip() or '-'}",
+            f"schedule: {str(task.get('schedule_type', '')).strip() or '-'}",
+            f"date: {str(task.get('start_date', '')).strip() or '-'}",
+            f"time: {str(task.get('start_time', '')).strip() or '-'}",
+            f"modifier: {task.get('modifier') if task.get('modifier') is not None else '-'}",
+            f"days: {_format_task_days(task)}",
+            f"status: {_format_task_status(task)}",
+            f"next: {_format_task_datetime(task.get('next_run_at', ''))}",
+            "",
+            f"prompt: {str(task.get('task_prompt', '')).strip() or '-'}",
+        ]
+    )
+
+
+def _task_action_reply_markup(task_id: str) -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "編輯",
+                    "callback_data": f"task:edit:{task_id}",
+                },
+                {
+                    "text": "刪除",
+                    "callback_data": f"task:delete:{task_id}",
+                },
+            ]
+        ]
+    }
+
+
+def _task_edit_reply_markup(task_id: str) -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "改時間",
+                    "callback_data": f"task:field:start_time:{task_id}",
+                },
+                {
+                    "text": "改日期",
+                    "callback_data": f"task:field:start_date:{task_id}",
+                },
+            ],
+            [
+                {
+                    "text": "改內容",
+                    "callback_data": f"task:field:task_prompt:{task_id}",
+                },
+                {
+                    "text": "取消",
+                    "callback_data": f"task:cancel:{task_id}",
+                },
+            ],
+        ]
+    }
+
+
+def _task_edit_instruction(task: dict, field: str) -> str:
+    field_prompts = {
+        "start_time": "請直接回覆新的時間，格式 `HH:MM`，例如 `18:30`。",
+        "start_date": "請直接回覆新的日期，格式 `YYYY-MM-DD`，例如 `2026-03-25`。",
+        "task_prompt": "請直接回覆新的任務內容。",
+    }
+    instruction = field_prompts.get(field, "請直接回覆新的值。")
+    return "\n".join(
+        [
+            "Task edit pending.",
+            instruction,
+            "輸入 `/cancel` 可以取消這次編輯。",
+            "",
+            _format_task_summary(task),
+        ]
+    )
+
+
+def _apply_task_edit(task: dict, *, field: str, raw_value: str, actor: str) -> dict:
+    value = str(raw_value or "").strip()
+    if not value:
+        raise ValueError("New value cannot be empty.")
+
+    if field not in {"start_time", "start_date", "task_prompt"}:
+        raise ValueError(f"Unsupported edit field: {field}")
+
+    enabled = bool(task.get("enabled"))
+    if field in {"start_time", "start_date"} and (
+        bool(task.get("completed")) or not bool(task.get("enabled"))
+    ):
+        enabled = True
+
+    return create_task(
+        name=str(task.get("task_name", "")).strip(),
+        task_prompt=value if field == "task_prompt" else str(task.get("task_prompt", "")).strip(),
+        schedule_type=str(task.get("schedule_type", "")).strip(),
+        start_time=value if field == "start_time" else str(task.get("start_time", "")).strip(),
+        start_date=value if field == "start_date" else str(task.get("start_date", "")).strip(),
+        modifier=task.get("modifier"),
+        days_of_week=list(task.get("days_of_week", []) or []),
+        overwrite=True,
+        enabled=enabled,
+        reason=f"Edited via Telegram inline action by {actor or 'telegram'}",
+    )
+
+
+def _extract_tool_field(text: str, key: str) -> str:
+    marker = f"{key}="
+    start = text.find(marker)
+    if start < 0:
+        return ""
+    start += len(marker)
+    end = text.find(" ", start)
+    if end < 0:
+        end = len(text)
+    return text[start:end].strip().strip('"')
+
+
+def _extract_tool_step(text: str) -> str:
+    if not str(text).startswith("step="):
+        return ""
+    start = len("step=")
+    end = str(text).find(" ", start)
+    if end < 0:
+        end = len(str(text))
+    return str(text)[start:end].strip()
+
+
+def _format_telegram_tool_event(event: dict) -> dict | None:
+    text = str(event.get("text", "")).strip()
+    rendered = str(event.get("rendered", "")).strip()
+    if not text.startswith("step="):
+        return None
+
+    kind = ""
+    if " call: " in text:
+        kind = "call"
+    elif " result: " in text:
+        kind = "result"
+    else:
+        return None
+
+    skill = _extract_tool_field(text, "skill")
+    action = _extract_tool_field(text, "action")
+    status = _extract_tool_field(text, "status")
+    step = _extract_tool_step(text)
+
+    if skill and action:
+        if kind == "call":
+            summary = f"[TOOL] {skill}.{action}"
+        else:
+            suffix = f" {status}" if status else ""
+            summary = f"[TOOL RESULT] {skill}.{action}{suffix}"
+    else:
+        summary = "[TOOL]" if kind == "call" else "[TOOL RESULT]"
+
+    return {
+        "summary": summary,
+        "details": rendered or text or summary,
+        "kind": kind,
+        "status": status,
+        "key": "|".join([step or "-", skill or "-", action or "-"]),
+    }
+
+
+def _tool_event_reply_markup(event_id: str, *, expanded: bool) -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "收合" if expanded else "展開",
+                    "callback_data": f"tool:{'hide' if expanded else 'show'}:{event_id}",
+                }
+            ]
+        ]
+    }
 
 
 def handle_cli_command(
@@ -488,12 +686,24 @@ def main():
     config_path = Path(__file__).resolve().parent / "config" / "config.json"
     config = Config(str(config_path))
     display = TerminalDisplay()
+    try:
+        architecture_cache_status = mark_architecture_cache_stale_on_agent_startup()
+    except Exception as exc:
+        display.system(f"Failed to mark Notion architecture cache stale on startup: {exc}")
+    else:
+        cache_path = str(architecture_cache_status.get("cache_path", "")).strip()
+        if cache_path:
+            display.system(f"Notion architecture cache marked stale on startup: {cache_path}")
     architecture_path = generate_system_architecture(config)
     display.system(f"System doc generated: {architecture_path}")
     client = LMStudioClient(base_url=config.base_url, api_key=config.api_key)
     agent = SimpleAgent(config=config, client=client, display=display)
     telegram_agents = {}
     telegram_bridge = None
+    telegram_task_edits = {}
+    telegram_tool_events = {}
+    telegram_tool_lock = threading.Lock()
+    telegram_tool_counter = {"value": 0}
 
     def build_agent_session():
         return SimpleAgent(
@@ -515,25 +725,297 @@ def main():
             return "This command is only available in the terminal session."
         return command_result["message"].strip() or "Done."
 
-    def broadcast_to_telegram(text: str, *, label: str):
+    def broadcast_to_telegram(
+        text: str,
+        *,
+        label: str,
+        reply_markup: dict | None = None,
+        chat_ids=None,
+    ):
         cleaned = str(text or "").strip()
         if not cleaned or not telegram_bridge:
             return
 
-        result = telegram_bridge.broadcast_text(cleaned)
+        result = telegram_bridge.broadcast_text(
+            cleaned,
+            reply_markup=reply_markup,
+            chat_ids=chat_ids,
+        )
         errors = result.get("errors", [])
         if errors:
             display.system_block(_format_telegram_delivery_errors(label, errors), notify=False)
+        return result
+
+    def resolve_active_task(identifier: str) -> dict | None:
+        tasks = list_tasks(include_deleted=False)
+        return _resolve_task_identifier(tasks, identifier)
+
+    def telegram_edit_key(chat_id: int, user_id) -> tuple[int, int]:
+        return (int(chat_id), int(user_id or 0))
+
+    def remember_tool_event(summary: str, details: str) -> str:
+        with telegram_tool_lock:
+            telegram_tool_counter["value"] += 1
+            event_id = f"tool-{telegram_tool_counter['value']}"
+            telegram_tool_events[event_id] = {
+                "summary": str(summary or "").strip(),
+                "details": str(details or "").strip(),
+            }
+            while len(telegram_tool_events) > 200:
+                oldest_key = next(iter(telegram_tool_events))
+                telegram_tool_events.pop(oldest_key, None)
+        return event_id
+
+    def build_tool_streamer(*, chat_ids) -> callable:
+        targets = sorted({int(chat_id) for chat_id in (chat_ids or [])})
+        pending_messages = {}
+
+        def handle_event(event: dict):
+            if not telegram_bridge or not targets:
+                return
+
+            tool_event = _format_telegram_tool_event(event)
+            if not tool_event:
+                return
+
+            event_key = str(tool_event.get("key", "")).strip()
+            if tool_event.get("kind") == "call":
+                event_id = remember_tool_event(
+                    tool_event["summary"],
+                    tool_event["details"],
+                )
+                result = broadcast_to_telegram(
+                    tool_event["summary"],
+                    label="tool-progress",
+                    reply_markup=_tool_event_reply_markup(event_id, expanded=False),
+                    chat_ids=targets,
+                )
+                message_ids_by_chat = {}
+                for delivery in result.get("deliveries", []):
+                    chat_id = delivery.get("chat_id")
+                    message_id = delivery.get("message_id")
+                    if chat_id is None or message_id is None:
+                        continue
+                    message_ids_by_chat[int(chat_id)] = int(message_id)
+
+                pending_messages[event_key] = {
+                    "event_id": event_id,
+                    "summary": tool_event["summary"],
+                    "details": tool_event["details"],
+                    "message_ids_by_chat": message_ids_by_chat,
+                }
+                return
+
+            if tool_event.get("kind") == "result":
+                pending = pending_messages.pop(event_key, None)
+                if not pending:
+                    event_id = remember_tool_event(
+                        tool_event["summary"],
+                        tool_event["details"],
+                    )
+                    broadcast_to_telegram(
+                        tool_event["summary"],
+                        label="tool-progress",
+                        reply_markup=_tool_event_reply_markup(event_id, expanded=False),
+                        chat_ids=targets,
+                    )
+                    return
+
+                event_id = pending["event_id"]
+                combined_summary = pending["summary"]
+                status = str(tool_event.get("status", "")).strip()
+                if status:
+                    combined_summary = f"{combined_summary} -> {status}"
+                else:
+                    combined_summary = f"{combined_summary} -> done"
+
+                combined_details = "\n".join(
+                    part
+                    for part in [
+                        str(pending.get("details", "")).strip(),
+                        str(tool_event.get("details", "")).strip(),
+                    ]
+                    if part
+                )
+                with telegram_tool_lock:
+                    telegram_tool_events[event_id] = {
+                        "summary": combined_summary,
+                        "details": combined_details,
+                    }
+
+                for target_chat_id in targets:
+                    message_id = pending["message_ids_by_chat"].get(int(target_chat_id))
+                    if message_id is None:
+                        broadcast_to_telegram(
+                            combined_summary,
+                            label="tool-progress",
+                            reply_markup=_tool_event_reply_markup(event_id, expanded=False),
+                            chat_ids=[int(target_chat_id)],
+                        )
+                        continue
+
+                    try:
+                        telegram_bridge.edit_message_text(
+                            int(target_chat_id),
+                            int(message_id),
+                            combined_summary,
+                            reply_markup=_tool_event_reply_markup(event_id, expanded=False),
+                        )
+                    except Exception:
+                        broadcast_to_telegram(
+                            combined_summary,
+                            label="tool-progress",
+                            reply_markup=_tool_event_reply_markup(event_id, expanded=False),
+                            chat_ids=[int(target_chat_id)],
+                        )
+
+        return handle_event
+
+    def on_telegram_callback(event: dict):
+        if not telegram_bridge:
+            return
+
+        chat_id = int(event.get("chat_id"))
+        user_id = event.get("user_id")
+        key = telegram_edit_key(chat_id, user_id)
+        callback_query_id = str(event.get("callback_query_id", "")).strip()
+        data = str(event.get("data", "")).strip()
+        message_id = event.get("message_id")
+        actor = str(event.get("username") or event.get("display_name") or chat_id).strip()
+
+        def answer(text: str = "", *, show_alert: bool = False):
+            if callback_query_id:
+                telegram_bridge.answer_callback_query(
+                    callback_query_id,
+                    text=text,
+                    show_alert=show_alert,
+                )
+
+        if data.startswith("tool:show:") or data.startswith("tool:hide:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                answer("Invalid tool action.", show_alert=True)
+                return
+
+            mode = parts[1].strip()
+            event_id = parts[2].strip()
+            payload = telegram_tool_events.get(event_id)
+            if not payload:
+                answer("Tool details expired.", show_alert=True)
+                return
+
+            if message_id is None:
+                answer()
+                return
+
+            expanded = mode == "show"
+            telegram_bridge.edit_message_text(
+                chat_id,
+                int(message_id),
+                payload["details"] if expanded else payload["summary"],
+                reply_markup=_tool_event_reply_markup(event_id, expanded=expanded),
+            )
+            answer()
+            return
+
+        if data.startswith("task:delete:"):
+            identifier = data.split(":", 2)[2].strip()
+            task = resolve_active_task(identifier)
+            if not task:
+                answer("Task not found or already deleted.", show_alert=True)
+                return
+
+            delete_task(
+                task.get("task_name", ""),
+                reason=f"Removed via Telegram inline action by {actor}",
+            )
+            pending = telegram_task_edits.get(key)
+            if pending and pending.get("task_id") == task.get("id", ""):
+                telegram_task_edits.pop(key, None)
+
+            answer("已刪除排程任務")
+            if message_id is not None:
+                telegram_bridge.edit_message_text(
+                    chat_id,
+                    int(message_id),
+                    "\n".join(
+                        [
+                            "Scheduled task deleted.",
+                            f"id: {task.get('id', '')}",
+                            f"name: {task.get('task_name', '')}",
+                        ]
+                    ),
+                )
+            return
+
+        if data.startswith("task:edit:"):
+            identifier = data.split(":", 2)[2].strip()
+            task = resolve_active_task(identifier)
+            if not task:
+                answer("Task not found or already deleted.", show_alert=True)
+                return
+
+            answer("選擇要編輯的欄位")
+            telegram_bridge.send_text(
+                chat_id,
+                "\n".join(
+                    [
+                        "Choose what to edit for this scheduled task.",
+                        "",
+                        _format_task_summary(task),
+                    ]
+                ),
+                reply_markup=_task_edit_reply_markup(str(task.get("id", "")).strip()),
+            )
+            return
+
+        if data.startswith("task:field:"):
+            parts = data.split(":", 3)
+            if len(parts) != 4:
+                answer("Invalid edit action.", show_alert=True)
+                return
+
+            field = parts[2].strip()
+            identifier = parts[3].strip()
+            task = resolve_active_task(identifier)
+            if not task:
+                answer("Task not found or already deleted.", show_alert=True)
+                return
+
+            telegram_task_edits[key] = {
+                "task_id": str(task.get("id", "")).strip(),
+                "field": field,
+            }
+            answer("請直接輸入新值")
+            telegram_bridge.send_text(chat_id, _task_edit_instruction(task, field))
+            return
+
+        if data.startswith("task:cancel:"):
+            telegram_task_edits.pop(key, None)
+            answer("已取消編輯")
+            if message_id is not None:
+                telegram_bridge.edit_message_text(
+                    chat_id,
+                    int(message_id),
+                    "Task edit cancelled.",
+                )
+            return
+
+        answer()
 
     def on_scheduled_event(event: dict):
-        with display.capture_events(categories={"system", "tool"}) as trace_events:
+        live_chat_ids = telegram_bridge.delivery_chat_ids() if telegram_bridge else []
+        with display.capture_events(
+            categories={"tool"},
+            on_event=build_tool_streamer(chat_ids=live_chat_ids),
+        ):
             reply = ""
 
             if event.get("status") == "error" and not event.get("dispatch_prompt"):
                 error_text = str(event.get("error", "")).strip() or "Unknown scheduler error"
                 display.system_block(f"Scheduled task error: {error_text}")
                 broadcast_to_telegram(
-                    format_telegram_trace_reply("", trace_events),
+                    f"Scheduled task error: {error_text}",
                     label="scheduled-task",
                 )
                 display.prompt()
@@ -556,6 +1038,7 @@ def main():
                 display.agent(reply)
             except Exception as exc:
                 error_text = str(exc)
+                reply = f"[ERROR] {error_text}"
                 record_task_result(
                     event.get("task_name", ""),
                     status="error",
@@ -566,9 +1049,18 @@ def main():
                 )
                 display.system_block(f"Scheduled task error: {error_text}")
 
+        reply_markup = None
+        task_id = str(event.get("task_id", "")).strip()
+        if task_id:
+            reply_markup = _task_action_reply_markup(task_id)
+
+        final_parts = [format_scheduled_trigger(event)]
+        if str(reply or "").strip():
+            final_parts.append(str(reply).strip())
         broadcast_to_telegram(
-            format_telegram_trace_reply(reply, trace_events),
+            "\n\n".join(final_parts),
             label="scheduled-task",
+            reply_markup=reply_markup,
         )
 
         display.prompt()
@@ -578,6 +1070,7 @@ def main():
 
     def on_telegram_message(event: dict) -> str:
         chat_id = int(event["chat_id"])
+        user_id = event.get("user_id")
         text = str(event.get("text", "")).strip()
         session_agent = get_telegram_agent(chat_id)
         display.system(
@@ -585,18 +1078,52 @@ def main():
             notify=False,
         )
 
-        with display.capture_events(categories={"system", "tool"}) as trace_events:
+        pending_edit = telegram_task_edits.get(telegram_edit_key(chat_id, user_id))
+        if pending_edit:
+            if text.lower() in {"/cancel", "cancel"}:
+                telegram_task_edits.pop(telegram_edit_key(chat_id, user_id), None)
+                return "Cancelled scheduled-task edit."
+
+            if text.startswith("/"):
+                return "A task edit is pending. Send the new value directly, or send /cancel."
+
+            task = resolve_active_task(pending_edit.get("task_id", ""))
+            if not task:
+                telegram_task_edits.pop(telegram_edit_key(chat_id, user_id), None)
+                return "Task not found. It may have been deleted already."
+
+            try:
+                updated_task = _apply_task_edit(
+                    task,
+                    field=str(pending_edit.get("field", "")).strip(),
+                    raw_value=text,
+                    actor=str(event.get("username") or event.get("display_name") or chat_id).strip(),
+                )
+            except Exception as exc:
+                return (
+                    f"Task edit failed: {exc}\n"
+                    "Send the new value again, or send /cancel to stop editing."
+                )
+
+            telegram_task_edits.pop(telegram_edit_key(chat_id, user_id), None)
+            return "Updated scheduled task.\n" + _format_task_summary(updated_task)
+
+        with display.capture_events(
+            categories={"tool"},
+            on_event=build_tool_streamer(chat_ids=[chat_id]),
+        ):
             if text.startswith("/"):
                 reply = handle_remote_command(text, session_agent)
             else:
                 reply = session_agent.run(text)
 
-        return format_telegram_trace_reply(reply, trace_events)
+        return reply
 
     if config.telegram_enabled and config.telegram_bot_token:
         telegram_bridge = TelegramBridge(
             bot_token=config.telegram_bot_token,
             handle_message=on_telegram_message,
+            handle_callback_query=on_telegram_callback,
             display=display,
             state_path=config.telegram_state_path,
             poll_timeout_seconds=config.telegram_poll_timeout_seconds,

@@ -23,10 +23,11 @@ class TerminalDisplay:
         return dict(self._enabled)
 
     @contextmanager
-    def capture_events(self, *, categories=None):
+    def capture_events(self, *, categories=None, on_event=None):
         capture = {
             "categories": set(categories or []),
             "events": [],
+            "on_event": on_event,
         }
         thread_id = threading.get_ident()
         with self._capture_lock:
@@ -58,11 +59,21 @@ class TerminalDisplay:
             "rendered": rendered,
             "category": category,
         }
+        listeners = []
         for capture in captures:
             categories = capture["categories"]
             if categories and category not in categories:
                 continue
             capture["events"].append(dict(event))
+            listener = capture.get("on_event")
+            if listener:
+                listeners.append(listener)
+
+        for listener in listeners:
+            try:
+                listener(dict(event))
+            except Exception:
+                continue
 
     def _emit(
         self,

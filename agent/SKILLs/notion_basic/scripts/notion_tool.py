@@ -56,11 +56,60 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _empty_architecture_cache() -> dict:
+    return {
+        "updated_at": "",
+        "sync_status": "fresh",
+        "stale_marked_at": "",
+        "stale_reason": "",
+        "last_mutation": {},
+        "snapshots": {},
+    }
+
+
+def _normalize_architecture_cache(data) -> dict:
+    normalized = _empty_architecture_cache()
+    if not isinstance(data, dict):
+        return normalized
+
+    normalized["updated_at"] = str(data.get("updated_at", "")).strip()
+
+    sync_status = str(data.get("sync_status", "")).strip().lower()
+    normalized["sync_status"] = "stale" if sync_status == "stale" else "fresh"
+
+    if normalized["sync_status"] == "stale":
+        normalized["stale_marked_at"] = str(data.get("stale_marked_at", "")).strip()
+        normalized["stale_reason"] = str(data.get("stale_reason", "")).strip()
+
+    last_mutation = data.get("last_mutation", {})
+    if isinstance(last_mutation, dict):
+        normalized["last_mutation"] = last_mutation
+
+    snapshots = data.get("snapshots", {})
+    if isinstance(snapshots, dict):
+        normalized["snapshots"] = snapshots
+
+    return normalized
+
+
+def _architecture_cache_status_payload(cache: dict) -> dict:
+    normalized = _normalize_architecture_cache(cache)
+    return {
+        "cache_path": str(ARCHITECTURE_CACHE_FILE),
+        "updated_at": normalized.get("updated_at", ""),
+        "sync_status": normalized.get("sync_status", "fresh"),
+        "is_stale": normalized.get("sync_status") == "stale",
+        "stale_marked_at": normalized.get("stale_marked_at", ""),
+        "stale_reason": normalized.get("stale_reason", ""),
+        "last_mutation": normalized.get("last_mutation", {}),
+    }
+
+
 def _ensure_architecture_storage():
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     if not ARCHITECTURE_CACHE_FILE.exists():
         ARCHITECTURE_CACHE_FILE.write_text(
-            json.dumps({"updated_at": "", "snapshots": {}}, ensure_ascii=False, indent=2),
+            json.dumps(_empty_architecture_cache(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
@@ -69,24 +118,14 @@ def _load_architecture_cache() -> dict:
     _ensure_architecture_storage()
     raw = ARCHITECTURE_CACHE_FILE.read_text(encoding="utf-8").strip()
     if not raw:
-        return {"updated_at": "", "snapshots": {}}
+        return _empty_architecture_cache()
 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return {"updated_at": "", "snapshots": {}}
+        return _empty_architecture_cache()
 
-    if not isinstance(data, dict):
-        return {"updated_at": "", "snapshots": {}}
-
-    snapshots = data.get("snapshots", {})
-    if not isinstance(snapshots, dict):
-        snapshots = {}
-
-    return {
-        "updated_at": str(data.get("updated_at", "")),
-        "snapshots": snapshots,
-    }
+    return _normalize_architecture_cache(data)
 
 
 def _save_architecture_cache(data: dict):
@@ -102,9 +141,70 @@ def _save_architecture_snapshot(snapshot: dict) -> str:
     root = snapshot.get("root") or {}
     root_key = f"{root.get('type', 'unknown')}:{root.get('id', 'unknown')}"
     cache["updated_at"] = _utc_now_iso()
+    cache["sync_status"] = "fresh"
+    cache["stale_marked_at"] = ""
+    cache["stale_reason"] = ""
     cache["snapshots"][root_key] = snapshot
     _save_architecture_cache(cache)
     return str(ARCHITECTURE_CACHE_FILE)
+
+
+def _mark_architecture_stale(
+    *,
+    action: str,
+    path: str,
+    reason: str = "",
+    update_last_mutation: bool = True,
+) -> dict:
+    cache = _load_architecture_cache()
+    marked_at = _utc_now_iso()
+    stale_reason = str(reason or "").strip() or f"Successful Notion mutation via {action}"
+    cache["sync_status"] = "stale"
+    cache["stale_marked_at"] = marked_at
+    cache["stale_reason"] = stale_reason
+    if update_last_mutation:
+        cache["last_mutation"] = {
+            "action": str(action or "").strip(),
+            "path": str(path or "").strip(),
+            "marked_at": marked_at,
+            "reason": stale_reason,
+        }
+    _save_architecture_cache(cache)
+    return _architecture_cache_status_payload(cache)
+
+
+def mark_architecture_cache_stale_on_agent_startup() -> dict:
+    return _mark_architecture_stale(
+        action="agent_startup",
+        path=str(ARCHITECTURE_CACHE_FILE),
+        reason=(
+            "Agent restarted; refresh Notion architecture before relying on cached structure."
+        ),
+        update_last_mutation=False,
+    )
+
+
+def _mark_result_architecture_stale(result: dict, *, reason: str = "") -> dict:
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        return result
+
+    cache_status = _mark_architecture_stale(
+        action=str(result.get("action", "")).strip(),
+        path=str(result.get("path", "")).strip(),
+        reason=reason,
+    )
+
+    existing_data = result.get("data")
+    if not isinstance(existing_data, dict):
+        existing_data = {"value": existing_data}
+        result["data"] = existing_data
+
+    existing_data["architecture_cache"] = cache_status
+    message = str(result.get("message", "")).strip() or "Success"
+    result["message"] = (
+        f"{message} Architecture cache marked stale; run sync_architecture before relying on cached structure."
+    )
+    return result
 
 
 def _normalize_object_type(value: str) -> str:
@@ -766,6 +866,7 @@ def _read_architecture_cache(
     include_snapshot: bool = False,
 ) -> dict:
     cache = _load_architecture_cache()
+    cache_status = _architecture_cache_status_payload(cache)
     had_lookup = bool(
         str(lookup_id or "").strip()
         or str(lookup_url or "").strip()
@@ -837,6 +938,7 @@ def _read_architecture_cache(
     data = {
         "cache_path": str(ARCHITECTURE_CACHE_FILE),
         "updated_at": cache.get("updated_at", ""),
+        "architecture_cache": cache_status,
         "snapshot_count": len(snapshot_summaries),
         "snapshots": snapshot_summaries,
         "matches": matches,
@@ -848,15 +950,26 @@ def _read_architecture_cache(
         },
     }
     cache_miss = bool(had_lookup and not matches)
+    cache_is_stale = bool(cache_status.get("is_stale"))
     data["cache_miss"] = cache_miss
-    data["should_sync_architecture"] = cache_miss
-    if cache_miss:
+    data["should_sync_architecture"] = cache_miss or cache_is_stale
+    if data["should_sync_architecture"]:
         data["recommended_next_action"] = "sync_architecture"
     if include_snapshot or (not normalized_lookup_id and not normalized_title and not normalized_object_type):
         data["cache"] = cache
 
     message = "Architecture cache read successfully"
-    if cache_miss:
+    if cache_is_stale and cache_miss:
+        message = (
+            "Architecture cache is marked stale and no cached match was found. "
+            "Run sync_architecture before concluding the item is missing."
+        )
+    elif cache_is_stale:
+        message = (
+            "Architecture cache is marked stale. "
+            "Run sync_architecture before relying on cached structure."
+        )
+    elif cache_miss:
         message = "No cached match found. Run sync_architecture before concluding the item is missing."
 
     return ok(
@@ -1476,11 +1589,13 @@ def run(
                 require_explicit=False,
                 label="parent_page",
             )
-            return _create_page(
-                runtime_config,
-                parent_page_id=parent_id,
-                title=title,
-                content=content,
+            return _mark_result_architecture_stale(
+                _create_page(
+                    runtime_config,
+                    parent_page_id=parent_id,
+                    title=title,
+                    content=content,
+                )
             )
 
         if action == "write_page":
@@ -1490,12 +1605,14 @@ def run(
                 require_explicit=True,
                 label="page",
             )
-            return _write_page(
-                runtime_config,
-                target_page_id=target_page_id,
-                content=content,
-                title=title,
-                allow_deleting_content=bool(allow_deleting_content),
+            return _mark_result_architecture_stale(
+                _write_page(
+                    runtime_config,
+                    target_page_id=target_page_id,
+                    content=content,
+                    title=title,
+                    allow_deleting_content=bool(allow_deleting_content),
+                )
             )
 
         if action == "append_page":
@@ -1505,11 +1622,13 @@ def run(
                 require_explicit=True,
                 label="page",
             )
-            return _append_page(
-                runtime_config,
-                target_page_id=target_page_id,
-                content=content,
-                after=after,
+            return _mark_result_architecture_stale(
+                _append_page(
+                    runtime_config,
+                    target_page_id=target_page_id,
+                    content=content,
+                    after=after,
+                )
             )
 
         if action == "replace_text":
@@ -1519,13 +1638,15 @@ def run(
                 require_explicit=True,
                 label="page",
             )
-            return _replace_text(
-                runtime_config,
-                target_page_id=target_page_id,
-                target=target,
-                new_text=new_text,
-                replace_all_matches=bool(replace_all_matches),
-                allow_deleting_content=bool(allow_deleting_content),
+            return _mark_result_architecture_stale(
+                _replace_text(
+                    runtime_config,
+                    target_page_id=target_page_id,
+                    target=target,
+                    new_text=new_text,
+                    replace_all_matches=bool(replace_all_matches),
+                    allow_deleting_content=bool(allow_deleting_content),
+                )
             )
 
         if action == "delete_page":
@@ -1535,11 +1656,13 @@ def run(
                 require_explicit=True,
                 label="page",
             )
-            return _set_page_trash_state(
-                runtime_config,
-                target_page_id=target_page_id,
-                in_trash=True,
-                action="delete_page",
+            return _mark_result_architecture_stale(
+                _set_page_trash_state(
+                    runtime_config,
+                    target_page_id=target_page_id,
+                    in_trash=True,
+                    action="delete_page",
+                )
             )
 
         if action == "restore_page":
@@ -1549,11 +1672,13 @@ def run(
                 require_explicit=True,
                 label="page",
             )
-            return _set_page_trash_state(
-                runtime_config,
-                target_page_id=target_page_id,
-                in_trash=False,
-                action="restore_page",
+            return _mark_result_architecture_stale(
+                _set_page_trash_state(
+                    runtime_config,
+                    target_page_id=target_page_id,
+                    in_trash=False,
+                    action="restore_page",
+                )
             )
 
         if action == "read_database":
@@ -1626,15 +1751,17 @@ def run(
                     require_explicit=False,
                     label="parent_page",
                 )
-            return _create_database(
-                runtime_config,
-                parent_page_id=parent_id,
-                title=title,
-                description=description,
-                is_inline=is_inline,
-                properties=row_properties,
-                initial_data_source=initial_data_source_body,
-                body=request_body,
+            return _mark_result_architecture_stale(
+                _create_database(
+                    runtime_config,
+                    parent_page_id=parent_id,
+                    title=title,
+                    description=description,
+                    is_inline=is_inline,
+                    properties=row_properties,
+                    initial_data_source=initial_data_source_body,
+                    body=request_body,
+                )
             )
 
         if action == "create_data_source":
@@ -1649,13 +1776,15 @@ def run(
                     database_url=parent_database_url or database_url,
                     require_explicit=False,
                 )
-            return _create_data_source(
-                runtime_config,
-                parent_database_id=parent_db_id,
-                title=title,
-                description=description,
-                properties=row_properties,
-                body=request_body,
+            return _mark_result_architecture_stale(
+                _create_data_source(
+                    runtime_config,
+                    parent_database_id=parent_db_id,
+                    title=title,
+                    description=description,
+                    properties=row_properties,
+                    body=request_body,
+                )
             )
 
         if action == "update_data_source":
@@ -1667,14 +1796,16 @@ def run(
                 database_url=database_url,
                 require_explicit=True,
             )
-            return _update_data_source(
-                runtime_config,
-                target_data_source_id=target_data_source_id,
-                title=title,
-                description=description,
-                properties=row_properties,
-                in_trash=in_trash,
-                body=request_body,
+            return _mark_result_architecture_stale(
+                _update_data_source(
+                    runtime_config,
+                    target_data_source_id=target_data_source_id,
+                    title=title,
+                    description=description,
+                    properties=row_properties,
+                    in_trash=in_trash,
+                    body=request_body,
+                )
             )
 
         if action == "create_row":
@@ -1692,13 +1823,15 @@ def run(
                     database_url=database_url,
                     require_explicit=False,
                 )
-            return _create_row(
-                runtime_config,
-                target_data_source_id=target_data_source_id,
-                properties=row_properties,
-                title=str(title or ""),
-                content=content,
-                body=request_body,
+            return _mark_result_architecture_stale(
+                _create_row(
+                    runtime_config,
+                    target_data_source_id=target_data_source_id,
+                    properties=row_properties,
+                    title=str(title or ""),
+                    content=content,
+                    body=request_body,
+                )
             )
 
         if action == "update_row":
@@ -1708,12 +1841,14 @@ def run(
                 require_explicit=True,
                 label="row_page",
             )
-            return _update_row(
-                runtime_config,
-                target_row_page_id=target_row_page_id,
-                properties=row_properties,
-                title=str(title or ""),
-                body=request_body,
+            return _mark_result_architecture_stale(
+                _update_row(
+                    runtime_config,
+                    target_row_page_id=target_row_page_id,
+                    properties=row_properties,
+                    title=str(title or ""),
+                    body=request_body,
+                )
             )
 
         if action == "delete_row":
@@ -1723,11 +1858,13 @@ def run(
                 require_explicit=True,
                 label="row_page",
             )
-            return _set_page_trash_state(
-                runtime_config,
-                target_page_id=target_row_page_id,
-                in_trash=True,
-                action="delete_row",
+            return _mark_result_architecture_stale(
+                _set_page_trash_state(
+                    runtime_config,
+                    target_page_id=target_row_page_id,
+                    in_trash=True,
+                    action="delete_row",
+                )
             )
 
         if action == "restore_row":
@@ -1737,11 +1874,13 @@ def run(
                 require_explicit=True,
                 label="row_page",
             )
-            return _set_page_trash_state(
-                runtime_config,
-                target_page_id=target_row_page_id,
-                in_trash=False,
-                action="restore_row",
+            return _mark_result_architecture_stale(
+                _set_page_trash_state(
+                    runtime_config,
+                    target_page_id=target_row_page_id,
+                    in_trash=False,
+                    action="restore_row",
+                )
             )
 
         return error_result(action, path_hint, f"Unsupported action: {action}")

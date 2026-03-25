@@ -886,6 +886,7 @@ def claim_due_tasks(
             scheduled_for = _iso(scheduled_dt)
             events.append(
                 {
+                    "task_id": normalized_record.get("id", ""),
                     "task_name": normalized_record.get("task_name", ""),
                     "short_name": normalized_record.get("short_name", ""),
                     "trigger": trigger,

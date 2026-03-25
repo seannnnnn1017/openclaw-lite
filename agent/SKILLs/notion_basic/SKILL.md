@@ -76,6 +76,8 @@ Behavior guidelines:
 - `create_row` and `update_row` accept raw Notion property payloads. Use `title` only as a convenience shortcut for the title property.
 - When the user asks where a Notion file, page, database, data source, or row is located, prefer `read_architecture_cache` first and inspect `E:\重要文件\openclaw-lite\agent\SKILLs\notion_basic\scripts\temporary_data\notion_architecture.json` before making live API calls.
 - Do not call `sync_architecture` by default for location questions. Use it only when the cache file is missing, the cached snapshot is clearly stale for the user task, or the user explicitly asks to refresh from Notion.
+- Agent startup marks the local architecture cache as stale, so a previously synced snapshot should not be treated as fresh after a restart until `sync_architecture` runs again.
+- Successful Notion write actions (`create_*`, `update_*`, `delete_*`, `restore_*`, `write_page`, `append_page`, `replace_text`) mark the local architecture cache as stale until `sync_architecture` refreshes it.
 - If `read_architecture_cache` returns no match for a requested item, do not answer "not found" immediately. Run `sync_architecture` once to refresh the local structure, then check the cache or refreshed snapshot again before concluding the item is missing.
 - `sync_architecture` follows child `<page ...>` and `<database ...>` references from page markdown, retrieves database data sources, and continues data source pagination until all rows are collected.
 - `sync_architecture` writes the resulting snapshot to `agent/SKILLs/notion_basic/scripts/temporary_data/notion_architecture.json` and also returns the snapshot JSON in the tool result.
@@ -90,7 +92,7 @@ Result shape:
 - Database and data source reads return summarized metadata plus schema-oriented fields.
 - Query actions return raw `results` and summarized `items`.
 - Row actions return row page metadata including `properties`.
-- `read_architecture_cache` returns `data.cache_path`, snapshot summaries, optional `matches`, and `data.should_sync_architecture` when a lookup misses in cache.
+- `read_architecture_cache` returns `data.cache_path`, snapshot summaries, `data.architecture_cache` status metadata, optional `matches`, and `data.should_sync_architecture` when a lookup misses in cache or when the cache is marked stale.
 - `sync_architecture` returns `data.cache_path` plus `data.snapshot` with `pages`, `databases`, `data_sources`, `rows`, and `counts`.
 - Errors are returned as structured error objects; preserve them faithfully.
 

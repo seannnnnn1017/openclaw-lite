@@ -21,30 +21,14 @@ CLI_COMMANDS = [
 ]
 
 CORE_COMPONENTS = [
-    "agent/main.py: primary terminal entrypoint; starts the terminal loop, scheduler, Telegram bridge, and regeneration of this file",
-    "agent/agent.py: `SimpleAgent` implementation; builds prompts, runs the chat loop, parses tool JSON, executes multi-step tool use, and stores per-session history",
-    "agent/config_loader.py: loads `config.json`, prompt files, and enabled skills; also supports live reload and runtime model override",
-    "agent/lmstudio_client.py: OpenAI-compatible chat client used by each agent session",
-    "agent/skill_client.py: HTTP client that sends tool execution JSON to the skill server",
-    "agent/skill_server.py: FastAPI process that receives skill execution requests and dispatches them to Python tool functions",
-    "agent/skill_runtime.py: skill loader and registry used by the skill server",
-    "agent/schedule_runtime.py: schedule registry, task normalization, next-run calculation, due-task claiming, and result recording",
-    "agent/chat_scheduler.py: background polling thread that claims due scheduled tasks every second",
-    "agent/telegram_bridge.py: Telegram Bot API long-poll bridge, allowlist enforcement, chat-state tracking, and message delivery",
-    "agent/terminal_display.py: shared formatter for `[THINK]`, `[TOOL]`, `[SYSTEM]`, `Agent:`, and `[COMMAND]`; also captures tool/system events for Telegram replies",
-    "agent/schemas.py: shared pydantic message and request schemas",
-    "agent/system_doc_generator.py: produces `agent/data/system/system_architecture.md` from the current config and enabled skill set",
-]
-
-EDIT_MAP = [
-    "Change slash commands or interactive routing in `agent/main.py`.",
-    "Change the main reasoning loop, tool-step limits, or history behavior in `agent/agent.py`.",
-    "Change config loading, prompt loading, or runtime model persistence in `agent/config_loader.py`.",
-    "Change Telegram polling, allowlist logic, known-chat persistence, or outbound delivery in `agent/telegram_bridge.py`.",
-    "Change scheduler timing, task claiming, or schedule registry logic in `agent/schedule_runtime.py` and `agent/chat_scheduler.py`.",
-    "Change display formatting or Telegram trace capture in `agent/terminal_display.py`.",
-    "Change tool loading or skill server behavior in `agent/skill_runtime.py` and `agent/skill_server.py`.",
-    "Change cross-skill rules in `agent/SKILLs/skill_rule.md` and per-skill behavior in each skill's `SKILL.md`.",
+    "agent/main.py: terminal entrypoint, command handling, Telegram routing, scheduler integration",
+    "agent/agent.py: `SimpleAgent` reasoning loop, tool JSON parsing, per-session history",
+    "agent/config_loader.py: loads config, prompts, enabled skills, and runtime model overrides",
+    "agent/skill_server.py + agent/skill_runtime.py: skill request dispatch and tool loading",
+    "agent/schedule_runtime.py + agent/chat_scheduler.py: schedule registry, due-task polling, result recording",
+    "agent/telegram_bridge.py: Telegram polling, allowlist checks, callback routing, message send/edit",
+    "agent/terminal_display.py: terminal rendering plus Telegram tool-event capture",
+    "agent/system_doc_generator.py: generates this file from current config and enabled skills",
 ]
 
 
@@ -112,13 +96,14 @@ def _skill_specific_notes(skill_name: str) -> list[str]:
         return [
             "Uses the Notion REST API and reads credentials from env vars or `agent/data/system/secrets.local.json`.",
             "Page content operations use Notion's markdown endpoints for full-page replace, append, and targeted search-and-replace.",
+            "A local architecture cache is stored in `agent/SKILLs/notion_basic/scripts/temporary_data/notion_architecture.json`; agent startup marks it stale and successful Notion write actions keep it stale until `sync_architecture` refreshes it.",
             "Delete is implemented as moving a page to trash; the Notion API does not permanently delete pages.",
         ]
     if skill_name == "schedule-task":
         return [
             "The scheduler stores timing plus `task_prompt`; it does not run raw shell commands directly.",
             "Due tasks are dispatched back into the main terminal `SimpleAgent` instance, not into a Telegram per-chat session.",
-            "When Telegram delivery targets are known, scheduled task output is broadcast to Telegram as well as printed in the terminal.",
+            "When Telegram delivery targets are known, scheduled task output is broadcast to Telegram with inline `編輯` and `刪除` actions, and edits are completed through follow-up chat messages.",
         ]
     if skill_name == "time-query":
         return [
@@ -138,6 +123,7 @@ def _skill_state_paths(skill_name: str, project_root: Path) -> list[str]:
         return [
             f"`{_relative_path(project_root / 'agent/data/system/secrets.example.json', project_root)}`: example shared secret configuration",
             f"`{_relative_path(project_root / 'agent/data/system/secrets.local.json', project_root)}`: ignored local shared secrets for LLM, Telegram, and Notion",
+            f"`{_relative_path(project_root / 'agent/SKILLs/notion_basic/scripts/temporary_data/notion_architecture.json', project_root)}`: local Notion architecture cache and freshness markers",
         ]
     if skill_name == "schedule-task":
         return [
@@ -199,8 +185,6 @@ def generate_system_architecture(config) -> Path:
     boundaries_path = (agent_root / prompt_config.get("boundaries", "prompts/boundaries.md")).resolve()
     identity_original_path = agent_root / "prompts" / "identity.original.md"
     skill_rule_path = agent_root / "SKILLs" / "skill_rule.md"
-    readme_path = project_root / "README.md"
-
     telegram_allowlist_parts = [
         f"allowed usernames={len(config.telegram_allowed_usernames)}",
         f"allowed chat IDs={len(config.telegram_allowed_chat_ids)}",
@@ -210,88 +194,61 @@ def generate_system_architecture(config) -> Path:
 
     snapshot_lines = [
         f"Generated at: {datetime.now().astimezone().isoformat(timespec='seconds')}",
-        f"Repository root marker: `{project_root.name}/`",
-        "Project root path in this document is expressed with repository-relative paths.",
-        "Agent root: `agent/`",
         f"Active model: `{config.model}`",
-        f"Config default model: `{config.default_model}`",
         f"LLM base URL: `{config.base_url}`",
         f"Skill server URL: `{config.skill_server_url}`",
-        f"Temperature: `{config.temperature}`",
-        f"Max tokens: `{config.max_tokens}`",
         f"Telegram bridge enabled: {'yes' if config.telegram_enabled else 'no'}",
-        f"Telegram bot token configured: {'yes (redacted)' if bool(config.telegram_bot_token) else 'no'}",
         f"Telegram polling: timeout={config.telegram_poll_timeout_seconds}s, retry_delay={config.telegram_retry_delay_seconds}s, skip_pending_on_start={'yes' if config.telegram_skip_pending_updates_on_start else 'no'}",
         f"Telegram allowlist summary: {', '.join(telegram_allowlist_parts)}",
         f"Enabled skills ({len(enabled_skill_names)}): {', '.join(f'`{name}`' for name in enabled_skill_names)}",
-        f"This file is regenerated on startup and `/reload`: `{_relative_path(output_path, project_root)}`",
     ]
 
     session_model_lines = [
-        "Terminal session: `main.py` creates one shared `SimpleAgent` instance named `agent` for terminal input and scheduled-task execution.",
-        "Telegram sessions: `main.py` keeps `telegram_agents[chat_id]`, creating one `SimpleAgent` per Telegram chat ID.",
-        "Session history is in-memory only. Terminal history and each Telegram chat history are separate.",
-        "Per-session history is capped to the most recent 10 messages in `SimpleAgent._append_history`.",
-        "The tool loop allows up to 6 tool steps per turn (`SimpleAgent.max_tool_steps = 6`).",
-        "Scheduled tasks run through the main terminal `agent` instance, then optionally broadcast results to Telegram delivery targets.",
+        "Terminal uses one shared `SimpleAgent` instance.",
+        "Telegram keeps one `SimpleAgent` per `chat_id` in `telegram_agents`.",
+        "History is in-memory and separated by session.",
+        "Tool loop limit: `SimpleAgent.max_tool_steps = 6`.",
     ]
 
     prompt_lines = [
-        "Prompt composition order: `identity -> system_rules -> boundaries -> enabled SKILL.md bodies`.",
         f"Active identity prompt: `{_relative_path(identity_path, project_root)}`",
         f"Active system rules prompt: `{_relative_path(system_rules_path, project_root)}`",
         f"Active boundaries prompt: `{_relative_path(boundaries_path, project_root)}`",
-        f"Identity template and editing guidance: `{_relative_path(identity_original_path, project_root)}`" if identity_original_path.exists() else "Identity template and editing guidance: not present",
+        "Prompt order: `identity -> system_rules -> boundaries -> enabled SKILL.md bodies`.",
         f"Cross-skill rules and project conventions: `{_relative_path(skill_rule_path, project_root)}`" if skill_rule_path.exists() else "Cross-skill rules file: not present",
     ]
 
     state_lines = [
-        f"`{_relative_path(config.path, project_root)}`: persisted non-secret configuration for model selection, endpoints, Telegram settings, and prompt paths",
-        f"`{_relative_path(agent_root / 'data/system/secrets.example.json', project_root)}`: example shared secret layout",
-        f"`{_relative_path(agent_root / 'data/system/secrets.local.json', project_root)}`: ignored local shared secrets for LLM, Telegram, and Notion",
-        f"`{telegram_state_rel}`: Telegram bridge state (`offset` plus remembered delivery chats)",
-        f"`{_relative_path(agent_root / 'SKILLs/schedule_task/scripts/temporary_data/task_registry.json', project_root)}`: scheduled task registry and last-run metadata",
-        f"`{_relative_path(agent_root / 'SKILLs/file_control/scripts/temporary_data/file_ID.json', project_root)}`: file-control backup index",
-        f"`{_relative_path(agent_root / 'SKILLs/file_control/scripts/temporary_data/backups', project_root)}/`: file-control backup payloads",
+        f"`{_relative_path(config.path, project_root)}`: non-secret runtime config",
+        f"`{_relative_path(agent_root / 'data/system/secrets.local.json', project_root)}`: local secrets for LLM, Telegram, Notion",
+        f"`{telegram_state_rel}`: Telegram offset + known chats",
+        f"`{_relative_path(agent_root / 'SKILLs/schedule_task/scripts/temporary_data/task_registry.json', project_root)}`: schedule registry",
+        f"`{_relative_path(agent_root / 'SKILLs/notion_basic/scripts/temporary_data/notion_architecture.json', project_root)}`: Notion architecture cache",
         f"`{_relative_path(agent_root / 'data/memories', project_root)}/`: persistent memory store",
-        f"`{_relative_path(project_root / '.codex-temp', project_root)}/`: root-level cache and scratch space cleared by `/clear cache`",
-        f"`{_relative_path(agent_root / '.codex-temp', project_root)}/`: agent-local cache and test scratch space also cleared by `/clear cache`",
-        f"`{_relative_path(output_path, project_root)}`: auto-generated system map used as a first-stop index",
+        f"`{_relative_path(output_path, project_root)}`: this generated system map",
     ]
 
     telegram_lines = [
-        "Inbound flow: `telegram_bridge.py` long-polls `getUpdates`, filters by allowlist, remembers known chats, and forwards text to `handle_message` in `main.py`.",
-        "Per-chat sessioning: each allowed `chat_id` gets its own `SimpleAgent` instance and isolated in-memory history.",
-        "Reply format: Telegram replies include captured `[SYSTEM]` and `[TOOL]` lines plus the final answer.",
-        "Command handling: Telegram slash commands reuse the same command handler as terminal commands, except `/exit` is blocked remotely.",
-        "Scheduled task delivery: scheduled-task output is broadcast to remembered allowed chats and any explicit `allowed_chat_ids`.",
-        "Push limitation: if only usernames are allowlisted, the bot must first receive a message from that chat before scheduled-task output can be pushed there.",
-        "Transport limitation: Telegram bridge is text-only; non-text messages receive a fallback reply.",
+        "Handles text messages plus `callback_query` inline actions.",
+        "Telegram sessions are isolated per `chat_id`.",
+        "Tool activity is streamed live as compact `[TOOL] skill.action` messages and edited in place with results.",
+        "Inline controls: `展開` / `收合` for tool details, `編輯` / `刪除` for scheduled-task notifications.",
+        "If only usernames are allowlisted, the bot must first receive a message from that chat before scheduled-task push works.",
     ]
 
     flow_lines = [
-        "Terminal request flow: terminal input -> `handle_cli_command` for `/...` or `SimpleAgent.run(...)` for normal input -> optional tool loop -> terminal display.",
-        "Telegram request flow: Telegram update -> allowlist check -> per-chat `SimpleAgent` -> capture system/tool events -> send combined trace and answer back through `sendMessage`.",
-        "Skill execution flow: model emits one JSON tool call -> `skill_client.py` posts to the skill server -> `skill_runtime.py` loads the configured Python function -> result JSON is returned to the agent as a follow-up message.",
-        "Scheduled task flow: `schedule-task` stores `task_prompt` and timing -> `chat_scheduler.py` claims due tasks -> `main.py` dispatches the prompt through the main terminal agent -> result is recorded in the schedule registry -> output is shown in terminal and broadcast to Telegram when possible.",
-        "Reload flow: `/reload` or file-change detection reloads config/prompts/skills, refreshes runtime clients, and regenerates this architecture file.",
+        "Terminal: input -> slash-command handler or `SimpleAgent.run(...)` -> optional tool loop -> terminal output.",
+        "Telegram: update -> allowlist check -> per-chat `SimpleAgent` -> live tool messages -> final answer.",
+        "Skills: model emits one JSON tool call -> skill server -> Python tool -> result returned to agent.",
+        "Scheduled tasks: registry -> due-task claim -> main `agent` runs `task_prompt` -> result recorded and optionally pushed to Telegram.",
     ]
 
     operational_notes = [
         "`/task ...` commands manipulate the schedule registry directly and do not require the LLM.",
-        "`/clear cache` deletes only `.codex-temp` directories; it does not delete scheduled tasks or file-control backups.",
-        "`file-control` protects its own backup store and returns permission denied if the agent targets `agent/SKILLs/file_control/scripts/temporary_data/`.",
-        "`schedule-task` is agent-native, not OS-native. Tasks stop running when the agent process is not running.",
-        "Secrets should live in `agent/data/system/secrets.local.json` or environment variables, not in tracked config files.",
-        "This file is safe to use as a repository map, but it is derived from the current config and enabled skills, so disabling a skill changes future output.",
-    ]
-
-    lookup_guide = [
-        "Need terminal or Telegram routing behavior: start with `agent/main.py` and `agent/telegram_bridge.py`.",
-        "Need prompt composition or live reload behavior: start with `agent/config_loader.py` and the Prompt Stack section above.",
-        "Need tool execution or skill registration: start with `agent/skill_server.py`, `agent/skill_runtime.py`, and the Enabled Skills section below.",
-        "Need scheduler behavior or task persistence: start with `agent/schedule_runtime.py`, `agent/chat_scheduler.py`, and the schedule-task skill section.",
-        f"Need broader usage examples or setup instructions: read `{_relative_path(readme_path, project_root)}`.",
+        "`/clear cache` only deletes `.codex-temp` directories.",
+        "`schedule-task` is agent-native; tasks stop when the agent process stops.",
+        "Agent startup marks the Notion architecture cache stale until `sync_architecture` refreshes it.",
+        "Secrets should stay in `agent/data/system/secrets.local.json` or environment variables.",
     ]
 
     sections = [
@@ -315,8 +272,6 @@ def generate_system_architecture(config) -> Path:
             _bullet_section("Telegram Integration", telegram_lines),
             _bullet_section("Execution Flows", flow_lines),
             _bullet_section("Operational Notes", operational_notes),
-            _bullet_section("Edit Map", EDIT_MAP),
-            _bullet_section("How To Use This File", lookup_guide),
         ]
     )
 

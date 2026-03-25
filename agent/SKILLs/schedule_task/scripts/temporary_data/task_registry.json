@@ -1,5 +1,5 @@
 {
-  "next_id": 8,
+  "next_id": 9,
   "tasks": [
     {
       "id": "TASK-000001",
@@ -252,6 +252,41 @@
       "last_run_at": "2026-03-24T17:00:07+08:00",
       "created_at": "2026-03-24T16:30:23+08:00",
       "updated_at": "2026-03-24T17:00:07+08:00",
+      "timeout_seconds": null
+    },
+    {
+      "id": "TASK-000008",
+      "task_name": "fiveminute-famous-person",
+      "name": "fiveminute-famous-person",
+      "short_name": "fiveminute-famous-person",
+      "task_prompt": "每五分鐘在 Notion database 中創建一個新頁面，並介紹一位名人。使用 database ID: 32e5aafd-db3b-807a-b2e5-c4c05c04b172, data_source_id: 32e5aafd-db3b-80fc-b4e8-000b2767f175。頁面內容應包含名人姓名和簡介。完成後在聊天室回報結果。",
+      "task": "",
+      "prompt": "",
+      "command": "",
+      "arguments": "",
+      "task_run": "",
+      "schedule_type": "minute",
+      "start_date": "2026-03-25",
+      "start_time": "00:00",
+      "modifier": 5,
+      "days_of_week": [],
+      "enabled": false,
+      "completed": false,
+      "deleted": true,
+      "deleted_at": "2026-03-25T21:57:11+08:00",
+      "next_run_at": "",
+      "pending_now": false,
+      "pending_requested_at": "",
+      "reason": "Removed via Telegram inline action by op23756778",
+      "last_status": "ok",
+      "last_response": "任務已完成：已在 Notion database 中創建名人介紹頁面「Albert Einstein」，內容包含姓名與簡介。下次觸發時將自動執行下一個名人介紹。",
+      "last_error": "",
+      "last_trigger": "delete",
+      "last_scheduled_for": "2026-03-25T21:55:00+08:00",
+      "last_dispatch_at": "2026-03-25T21:55:00+08:00",
+      "last_run_at": "2026-03-25T21:55:13+08:00",
+      "created_at": "2026-03-25T21:49:42+08:00",
+      "updated_at": "2026-03-25T21:57:11+08:00",
       "timeout_seconds": null
     }
   ]
