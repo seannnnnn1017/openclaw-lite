@@ -1,4 +1,5 @@
 import json
+import mimetypes
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,20 @@ PROTECTED_MUTATING_ACTIONS = {
     "replace_text",
     "insert_after",
     "insert_before",
+}
+KNOWN_IMAGE_MIME_TYPES = {
+    ".avif": "image/avif",
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".webp": "image/webp",
 }
 
 
@@ -48,6 +63,40 @@ def error(action: str, path: str, message: str):
 
 def read_text(full_path: str) -> str:
     return Path(full_path).read_text(encoding="utf-8")
+
+
+def guess_mime_type(full_path: str) -> str:
+    suffix = Path(full_path).suffix.lower()
+    guessed, _ = mimetypes.guess_type(str(full_path))
+    if guessed:
+        return guessed
+    return KNOWN_IMAGE_MIME_TYPES.get(suffix, "application/octet-stream")
+
+
+def is_image_file(full_path: str) -> bool:
+    mime_type = guess_mime_type(full_path)
+    if mime_type.startswith("image/"):
+        return True
+    return Path(full_path).suffix.lower() in KNOWN_IMAGE_MIME_TYPES
+
+
+def read_image_payload(path: str, full_path: str) -> dict:
+    file_path = Path(full_path)
+    size_bytes = file_path.stat().st_size
+    mime_type = guess_mime_type(full_path)
+    return ok(
+        action="read",
+        path=path,
+        message="Image file read successfully",
+        data={
+            "read_kind": "image",
+            "local_path": str(file_path),
+            "filename": file_path.name,
+            "mime_type": mime_type,
+            "size": size_bytes,
+            "size_bytes": size_bytes,
+        },
+    )
 
 
 def write_text(full_path: str, content: str):
@@ -244,7 +293,17 @@ def run(
             if not Path(full_path).exists():
                 return error(action, path, "File not found")
 
-            text = read_text(full_path)
+            if is_image_file(full_path):
+                return read_image_payload(path, full_path)
+
+            try:
+                text = read_text(full_path)
+            except UnicodeDecodeError:
+                return error(
+                    action,
+                    path,
+                    "Unsupported binary file type for read. Only text files and images are supported.",
+                )
             return ok(
                 action=action,
                 path=path,

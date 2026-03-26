@@ -1,6 +1,9 @@
+import base64
+import mimetypes
 import shlex
 import shutil
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -12,15 +15,6 @@ from schedule_runtime import create_task, delete_task, list_tasks, record_task_r
 from system_doc_generator import generate_system_architecture
 from terminal_display import TerminalDisplay
 from telegram_bridge import TelegramBridge
-
-try:
-    from agent.SKILLs.notion_basic.scripts.notion_tool import (
-        mark_architecture_cache_stale_on_agent_startup,
-    )
-except ModuleNotFoundError:
-    from SKILLs.notion_basic.scripts.notion_tool import (
-        mark_architecture_cache_stale_on_agent_startup,
-    )
 
 
 HELP_TEXT = """Available commands:
@@ -53,6 +47,9 @@ THINK_HELP_TEXT = """Think commands:
 /think [on|off]            Show the current [THINK] setting or toggle it
   on                       Show [THINK n] output
   off                      Hide [THINK n] output"""
+
+TELEGRAM_STREAM_REFRESH_SECONDS = 0.3
+TELEGRAM_STREAM_PREVIEW_LIMIT = 3500
 
 
 def format_scheduled_trigger(event: dict) -> str:
@@ -92,6 +89,218 @@ def _format_telegram_delivery_errors(label: str, errors: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _format_saved_telegram_images(images: list[dict]) -> str:
+    if not images:
+        return ""
+
+    noun = "image" if len(images) == 1 else "images"
+    lines = [f"Saved Telegram {noun} locally:"]
+    for index, image in enumerate(images, start=1):
+        path = str(image.get("saved_path", "")).strip() or "-"
+        parts = [f"{index}. {path}"]
+        width = image.get("width")
+        height = image.get("height")
+        if width and height:
+            parts.append(f"{width}x{height}")
+        mime_type = str(image.get("mime_type", "")).strip()
+        if mime_type:
+            parts.append(mime_type)
+        lines.append(" | ".join(parts))
+    return "\n".join(lines)
+
+
+def _looks_like_tool_payload(text: str) -> bool:
+    stripped = str(text or "").lstrip()
+    if not stripped:
+        return False
+    if stripped.startswith("{"):
+        return True
+    if stripped.startswith("```"):
+        fence_body = stripped[3:].lstrip()
+        if fence_body.lower().startswith("json") or fence_body.startswith("{"):
+            return True
+    head = stripped[:200]
+    return '"skill"' in head and '"action"' in head
+
+
+class TelegramRollingReply:
+    def __init__(
+        self,
+        telegram_bridge: TelegramBridge,
+        *,
+        chat_id: int,
+        refresh_seconds: float = TELEGRAM_STREAM_REFRESH_SECONDS,
+        preview_limit: int = TELEGRAM_STREAM_PREVIEW_LIMIT,
+    ):
+        self.telegram_bridge = telegram_bridge
+        self.chat_id = int(chat_id)
+        self.refresh_seconds = float(refresh_seconds)
+        self.preview_limit = int(preview_limit)
+        self.message_id = None
+        self.last_sent_text = ""
+        self.last_sent_at = 0.0
+        self.pending_text = ""
+        self.finalized = False
+
+    def _preview_text(self, text: str) -> str:
+        cleaned = str(text or "").strip()
+        if len(cleaned) <= self.preview_limit:
+            return cleaned
+        return cleaned[: max(1, self.preview_limit - 1)].rstrip() + "…"
+
+    def _send_or_edit(self, text: str) -> bool:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return False
+
+        try:
+            if self.message_id is None:
+                results = self.telegram_bridge.send_text(self.chat_id, cleaned)
+                first_result = results[0] if results else {}
+                message_id = first_result.get("message_id") if isinstance(first_result, dict) else None
+                if message_id is not None:
+                    self.message_id = int(message_id)
+            else:
+                self.telegram_bridge.edit_message_text(
+                    self.chat_id,
+                    int(self.message_id),
+                    cleaned,
+                )
+        except Exception:
+            return False
+
+        self.last_sent_text = cleaned
+        self.last_sent_at = time.monotonic()
+        self.pending_text = ""
+        return True
+
+    def push_preview(self, text: str):
+        if self.finalized:
+            return
+
+        cleaned = str(text or "").strip()
+        if not cleaned or _looks_like_tool_payload(cleaned):
+            return
+
+        preview = self._preview_text(cleaned)
+        if not preview or preview == self.last_sent_text:
+            return
+
+        now = time.monotonic()
+        if self.message_id is not None and (now - self.last_sent_at) < self.refresh_seconds:
+            self.pending_text = preview
+            return
+
+        self._send_or_edit(preview)
+
+    def finalize(self, text: str) -> bool:
+        if self.finalized:
+            return True
+        self.finalized = True
+
+        final_text = str(text or "").strip()
+        if not final_text:
+            return False
+
+        chunks = self.telegram_bridge._split_text(final_text, limit=self.preview_limit)
+        if not chunks:
+            return False
+
+        try:
+            if self.message_id is None:
+                self.telegram_bridge.send_text(self.chat_id, final_text)
+                return True
+
+            if chunks[0] != self.last_sent_text:
+                self.telegram_bridge.edit_message_text(
+                    self.chat_id,
+                    int(self.message_id),
+                    chunks[0],
+                )
+            for chunk in chunks[1:]:
+                self.telegram_bridge.send_text(self.chat_id, chunk)
+            return True
+        except Exception:
+            try:
+                self.telegram_bridge.send_text(self.chat_id, final_text)
+                return True
+            except Exception:
+                return False
+
+
+def image_file_to_data_url(image_path: Path) -> str:
+    resolved_path = Path(image_path).expanduser().resolve()
+    if not resolved_path.is_file():
+        raise FileNotFoundError(f"Image not found: {resolved_path}")
+
+    mime_type, _ = mimetypes.guess_type(str(resolved_path))
+    if not mime_type:
+        mime_type = "application/octet-stream"
+
+    encoded = base64.b64encode(resolved_path.read_bytes()).decode("utf-8")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _build_telegram_image_prompt(event: dict) -> str:
+    images = [item for item in (event.get("images") or []) if isinstance(item, dict)]
+    lines = [
+        "A Telegram user sent image attachment(s).",
+        "The saved local file paths are listed below.",
+        "Use the attached image(s) together with the caption/request.",
+    ]
+
+    caption = str(event.get("caption", "")).strip()
+    text = str(event.get("text", "")).strip()
+    if caption:
+        lines.extend(["Caption:", caption])
+    elif text:
+        lines.extend(["Message text:", text])
+    else:
+        lines.append("No caption was provided.")
+
+    lines.append("Saved image files:")
+    for index, image in enumerate(images, start=1):
+        saved_path = str(image.get("saved_path", "")).strip() or "-"
+        details = [f"{index}. path={saved_path}"]
+        original_name = str(image.get("original_name", "")).strip()
+        if original_name:
+            details.append(f"original_name={original_name}")
+        mime_type = str(image.get("mime_type", "")).strip()
+        if mime_type:
+            details.append(f"mime_type={mime_type}")
+        width = image.get("width")
+        height = image.get("height")
+        if width and height:
+            details.append(f"size={width}x{height}")
+        byte_count = image.get("bytes")
+        if byte_count is not None:
+            details.append(f"bytes={byte_count}")
+        lines.append(", ".join(details))
+
+    lines.append(
+        "Respond based on the user's caption/request and mention the saved local path(s) when useful."
+    )
+    return "\n".join(lines)
+
+
+def _build_telegram_image_user_input(event: dict):
+    images = [item for item in (event.get("images") or []) if isinstance(item, dict)]
+    content = [{"type": "text", "text": _build_telegram_image_prompt(event)}]
+    for image in images:
+        saved_path = str(image.get("saved_path", "")).strip()
+        if not saved_path:
+            continue
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": image_file_to_data_url(Path(saved_path)),
+                },
+            }
+        )
+    return content
+
+
 def describe_model(config: Config) -> str:
     if config.has_runtime_model_override():
         return f"{config.model} (session override, config default: {config.default_model})"
@@ -108,6 +317,7 @@ def format_status(config: Config, agent: SimpleAgent) -> str:
         [
             f"Model: {describe_model(config)}",
             f"History messages: {agent.history_size()}",
+            f"LLM streaming: {'enabled' if getattr(config, 'stream', False) else 'disabled'}",
             f"Display categories: {', '.join(display_states)}",
             f"Skill server: {config.skill_server_url}",
             f"LLM base URL: {config.base_url}",
@@ -686,14 +896,6 @@ def main():
     config_path = Path(__file__).resolve().parent / "config" / "config.json"
     config = Config(str(config_path))
     display = TerminalDisplay()
-    try:
-        architecture_cache_status = mark_architecture_cache_stale_on_agent_startup()
-    except Exception as exc:
-        display.system(f"Failed to mark Notion architecture cache stale on startup: {exc}")
-    else:
-        cache_path = str(architecture_cache_status.get("cache_path", "")).strip()
-        if cache_path:
-            display.system(f"Notion architecture cache marked stale on startup: {cache_path}")
     architecture_path = generate_system_architecture(config)
     display.system(f"System doc generated: {architecture_path}")
     client = LMStudioClient(base_url=config.base_url, api_key=config.api_key)
@@ -1072,14 +1274,20 @@ def main():
         chat_id = int(event["chat_id"])
         user_id = event.get("user_id")
         text = str(event.get("text", "")).strip()
+        caption = str(event.get("caption", "")).strip()
+        images = [item for item in (event.get("images") or []) if isinstance(item, dict)]
         session_agent = get_telegram_agent(chat_id)
+        rolling_reply = None
+        response_stream_callback = None
         display.system(
-            f"Telegram message chat={chat_id} user={event.get('username') or event.get('display_name') or '-'}",
+            f"Telegram message chat={chat_id} user={event.get('username') or event.get('display_name') or '-'} images={len(images)}",
             notify=False,
         )
 
         pending_edit = telegram_task_edits.get(telegram_edit_key(chat_id, user_id))
         if pending_edit:
+            if images:
+                return "A task edit is pending. Send the new value as plain text only, or send /cancel."
             if text.lower() in {"/cancel", "cancel"}:
                 telegram_task_edits.pop(telegram_edit_key(chat_id, user_id), None)
                 return "Cancelled scheduled-task edit."
@@ -1108,14 +1316,52 @@ def main():
             telegram_task_edits.pop(telegram_edit_key(chat_id, user_id), None)
             return "Updated scheduled task.\n" + _format_task_summary(updated_task)
 
+        if telegram_bridge and not text.startswith("/"):
+            rolling_reply = TelegramRollingReply(telegram_bridge, chat_id=chat_id)
+
+            def response_stream_callback(stream_text: str, *, final: bool = False):
+                if final:
+                    return
+                rolling_reply.push_preview(stream_text)
+
         with display.capture_events(
             categories={"tool"},
             on_event=build_tool_streamer(chat_ids=[chat_id]),
         ):
-            if text.startswith("/"):
+            if images:
+                history_user_input = _build_telegram_image_prompt(event)
+                try:
+                    user_input = _build_telegram_image_user_input(event)
+                except Exception as exc:
+                    display.system(
+                        f"Telegram image prompt fallback chat={chat_id}: {exc}",
+                        notify=False,
+                    )
+                    user_input = history_user_input
+                reply = session_agent.run(
+                    user_input,
+                    history_user_input=history_user_input,
+                    response_stream_callback=response_stream_callback,
+                )
+            elif text.startswith("/"):
                 reply = handle_remote_command(text, session_agent)
             else:
-                reply = session_agent.run(text)
+                reply = session_agent.run(
+                    text,
+                    response_stream_callback=response_stream_callback,
+                )
+
+        if images:
+            reply_parts = [_format_saved_telegram_images(images), str(reply or "").strip()]
+            if caption and not str(reply or "").strip():
+                reply_parts.append(f"Caption: {caption}")
+            final_reply = "\n\n".join(part for part in reply_parts if part)
+            if rolling_reply and rolling_reply.finalize(final_reply):
+                return ""
+            return final_reply
+
+        if rolling_reply and rolling_reply.finalize(reply):
+            return ""
 
         return reply
 
@@ -1126,6 +1372,7 @@ def main():
             handle_callback_query=on_telegram_callback,
             display=display,
             state_path=config.telegram_state_path,
+            image_storage_path=config.telegram_image_storage_path,
             poll_timeout_seconds=config.telegram_poll_timeout_seconds,
             retry_delay_seconds=config.telegram_retry_delay_seconds,
             allowed_chat_ids=config.telegram_allowed_chat_ids,

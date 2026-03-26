@@ -40,27 +40,93 @@ class LMStudioClient:
 
         return None
 
-    def chat(self, request: ChatRequest) -> str:
-        response = self.client.chat.completions.create(
-            model=request.model,
-            messages=request.to_dict()["messages"],
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-        )
+    def _combine_content_and_reasoning(self, *, content: str, reasoning: str) -> str:
+        cleaned_content = str(content or "").strip()
+        cleaned_reasoning = str(reasoning or "").strip()
 
-        message = response.choices[0].message
-        content = self._coerce_text(getattr(message, "content", ""))
+        if cleaned_reasoning:
+            if cleaned_content:
+                return f"<think>{cleaned_reasoning}</think>\n{cleaned_content}"
+            return f"<think>{cleaned_reasoning}</think>"
 
-        reasoning = ""
+        return cleaned_content
+
+    def _extract_reasoning_text(self, payload) -> str:
         for key in ("reasoning_content", "reasoning", "thinking"):
-            raw_value = self._get_message_extra(message, key)
+            raw_value = self._get_message_extra(payload, key)
             reasoning = self._coerce_text(raw_value).strip()
             if reasoning:
-                break
+                return reasoning
+        return ""
 
-        if reasoning:
-            if content:
-                return f"<think>{reasoning}</think>\n{content}"
-            return f"<think>{reasoning}</think>"
+    def _notify_content_stream(self, callback, text: str, *, final: bool):
+        if not callback:
+            return
 
-        return content
+        try:
+            callback(text, final=final)
+        except TypeError:
+            callback(text)
+        except Exception:
+            return
+
+    def _collect_stream_text(self, stream, *, on_content_stream=None) -> str:
+        content_parts = []
+        reasoning_parts = []
+
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None)
+            if choices is None and isinstance(chunk, dict):
+                choices = chunk.get("choices")
+            if not choices:
+                continue
+
+            for choice in choices:
+                delta = getattr(choice, "delta", None)
+                if delta is None and isinstance(choice, dict):
+                    delta = choice.get("delta")
+                if delta is None:
+                    continue
+
+                content_piece = self._coerce_text(self._get_message_extra(delta, "content"))
+                if content_piece:
+                    content_parts.append(content_piece)
+                    self._notify_content_stream(
+                        on_content_stream,
+                        "".join(content_parts),
+                        final=False,
+                    )
+
+                reasoning_piece = self._extract_reasoning_text(delta)
+                if reasoning_piece:
+                    reasoning_parts.append(reasoning_piece)
+
+        self._notify_content_stream(
+            on_content_stream,
+            "".join(content_parts),
+            final=True,
+        )
+        return self._combine_content_and_reasoning(
+            content="".join(content_parts),
+            reasoning="".join(reasoning_parts),
+        )
+
+    def chat(self, request: ChatRequest, *, on_content_stream=None) -> str:
+        create_kwargs = {
+            "model": request.model,
+            "messages": request.to_dict()["messages"],
+            "temperature": request.temperature,
+            "max_tokens": request.max_tokens,
+            "stream": request.stream,
+        }
+
+        if request.stream:
+            stream = self.client.chat.completions.create(**create_kwargs)
+            return self._collect_stream_text(stream, on_content_stream=on_content_stream)
+
+        response = self.client.chat.completions.create(**create_kwargs)
+        message = response.choices[0].message
+        content = self._coerce_text(getattr(message, "content", ""))
+        reasoning = self._extract_reasoning_text(message)
+        self._notify_content_stream(on_content_stream, content, final=True)
+        return self._combine_content_and_reasoning(content=content, reasoning=reasoning)

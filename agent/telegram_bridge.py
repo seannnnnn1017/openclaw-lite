@@ -1,7 +1,23 @@
 import json
+import mimetypes
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
-from urllib import error, request
+from urllib import error, parse, request
+
+
+IMAGE_FILE_EXTENSIONS = {
+    ".bmp",
+    ".gif",
+    ".heic",
+    ".heif",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".tif",
+    ".tiff",
+    ".webp",
+}
 
 
 class TelegramBridge:
@@ -13,6 +29,7 @@ class TelegramBridge:
         handle_callback_query=None,
         display,
         state_path: str,
+        image_storage_path: str | None = None,
         poll_timeout_seconds: int = 20,
         retry_delay_seconds: float = 5.0,
         allowed_chat_ids=None,
@@ -24,6 +41,11 @@ class TelegramBridge:
         self.handle_callback_query = handle_callback_query
         self.display = display
         self.state_path = Path(state_path).expanduser().resolve()
+        self.image_storage_path = (
+            Path(image_storage_path).expanduser().resolve()
+            if image_storage_path
+            else (self.state_path.parent.parent / "telegram_media").resolve()
+        )
         self.poll_timeout_seconds = max(int(poll_timeout_seconds or 20), 1)
         self.retry_delay_seconds = max(float(retry_delay_seconds or 5.0), 0.5)
         self.allowed_chat_ids = {int(item) for item in (allowed_chat_ids or [])}
@@ -71,6 +93,10 @@ class TelegramBridge:
     def _api_url(self, method: str) -> str:
         return f"https://api.telegram.org/bot{self.bot_token}/{method}"
 
+    def _file_url(self, file_path: str) -> str:
+        cleaned = parse.quote(str(file_path or "").lstrip("/"), safe="/")
+        return f"https://api.telegram.org/file/bot{self.bot_token}/{cleaned}"
+
     def _api_call(self, method: str, payload: dict):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = request.Request(
@@ -93,6 +119,18 @@ class TelegramBridge:
             raise RuntimeError(data.get("description") or f"Telegram API error on {method}")
 
         return data.get("result")
+
+    def _download_binary(self, url: str) -> bytes:
+        req = request.Request(url=url, method="GET")
+
+        try:
+            with request.urlopen(req, timeout=self.poll_timeout_seconds + 10) as response:
+                return response.read()
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Telegram HTTP {exc.code}: {detail}") from exc
+        except error.URLError as exc:
+            raise RuntimeError(f"Telegram unavailable: {exc.reason}") from exc
 
     def _load_state(self):
         with self._state_lock:
@@ -174,6 +212,175 @@ class TelegramBridge:
                 self._known_chats[int(chat_id)] = normalized_username
         if changed:
             self._save_state()
+
+    def _is_image_document(self, document: dict) -> bool:
+        mime_type = str(document.get("mime_type", "")).strip().lower()
+        if mime_type.startswith("image/"):
+            return True
+
+        file_name = str(document.get("file_name", "")).strip()
+        return Path(file_name).suffix.lower() in IMAGE_FILE_EXTENSIONS
+
+    def _guess_image_extension(
+        self,
+        *,
+        original_name: str = "",
+        telegram_file_path: str = "",
+        mime_type: str = "",
+        default_extension: str = ".jpg",
+    ) -> str:
+        for candidate in (original_name, telegram_file_path):
+            suffix = Path(str(candidate or "").strip()).suffix.lower()
+            if suffix:
+                return ".jpg" if suffix == ".jpe" else suffix
+
+        normalized_mime = str(mime_type or "").split(";", 1)[0].strip().lower()
+        if normalized_mime:
+            guessed = mimetypes.guess_extension(normalized_mime)
+            if guessed:
+                return ".jpg" if guessed == ".jpe" else guessed.lower()
+
+        return default_extension
+
+    def _build_saved_image_path(
+        self,
+        *,
+        chat_id: int,
+        message_id,
+        update_id: int,
+        message_date,
+        extension: str,
+    ) -> Path:
+        timestamp = datetime.now().astimezone()
+        if isinstance(message_date, int):
+            timestamp = datetime.fromtimestamp(message_date, tz=timezone.utc).astimezone()
+
+        safe_extension = str(extension or ".jpg").strip().lower() or ".jpg"
+        if not safe_extension.startswith("."):
+            safe_extension = f".{safe_extension}"
+
+        target_dir = self.image_storage_path / timestamp.strftime("%Y-%m-%d") / f"chat_{int(chat_id)}"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir / (
+            f"telegram_{timestamp.strftime('%Y%m%d_%H%M%S')}"
+            f"_u{int(update_id)}_m{int(message_id or 0)}{safe_extension}"
+        )
+
+    def _download_image_asset(
+        self,
+        *,
+        kind: str,
+        file_id: str,
+        chat_id: int,
+        message_id,
+        update_id: int,
+        message_date,
+        original_name: str = "",
+        mime_type: str = "",
+        width=None,
+        height=None,
+        file_size=None,
+    ) -> dict:
+        file_info = self._api_call("getFile", {"file_id": str(file_id)})
+        telegram_file_path = str(file_info.get("file_path", "")).strip()
+        if not telegram_file_path:
+            raise RuntimeError("Telegram getFile returned no file_path.")
+
+        extension = self._guess_image_extension(
+            original_name=original_name,
+            telegram_file_path=telegram_file_path,
+            mime_type=mime_type,
+            default_extension=".jpg" if kind == "photo" else ".img",
+        )
+        saved_path = self._build_saved_image_path(
+            chat_id=chat_id,
+            message_id=message_id,
+            update_id=update_id,
+            message_date=message_date,
+            extension=extension,
+        )
+        payload = self._download_binary(self._file_url(telegram_file_path))
+        saved_path.write_bytes(payload)
+
+        asset = {
+            "kind": kind,
+            "file_id": str(file_id),
+            "saved_path": str(saved_path),
+            "saved_name": saved_path.name,
+            "telegram_file_path": telegram_file_path,
+            "mime_type": str(mime_type or "").strip(),
+            "original_name": str(original_name or "").strip(),
+            "bytes": len(payload),
+        }
+        if width is not None:
+            asset["width"] = width
+        if height is not None:
+            asset["height"] = height
+        if file_size is not None:
+            asset["telegram_file_size"] = file_size
+        return asset
+
+    def _extract_message_images(self, message: dict, update_id: int) -> list[dict]:
+        chat = message.get("chat") or {}
+        chat_id = chat.get("id")
+        if chat_id is None:
+            return []
+
+        message_id = message.get("message_id")
+        message_date = message.get("date")
+        images = []
+
+        photo_sizes = message.get("photo") or []
+        if isinstance(photo_sizes, list):
+            photo_candidates = [
+                item
+                for item in photo_sizes
+                if isinstance(item, dict) and str(item.get("file_id", "")).strip()
+            ]
+            if photo_candidates:
+                selected_photo = max(
+                    photo_candidates,
+                    key=lambda item: (
+                        int(item.get("file_size") or 0),
+                        int(item.get("width") or 0) * int(item.get("height") or 0),
+                    ),
+                )
+                images.append(
+                    self._download_image_asset(
+                        kind="photo",
+                        file_id=str(selected_photo.get("file_id", "")).strip(),
+                        chat_id=int(chat_id),
+                        message_id=message_id,
+                        update_id=update_id,
+                        message_date=message_date,
+                        mime_type="image/jpeg",
+                        width=selected_photo.get("width"),
+                        height=selected_photo.get("height"),
+                        file_size=selected_photo.get("file_size"),
+                    )
+                )
+
+        document = message.get("document") or {}
+        if (
+            isinstance(document, dict)
+            and str(document.get("file_id", "")).strip()
+            and self._is_image_document(document)
+        ):
+            images.append(
+                self._download_image_asset(
+                    kind="document",
+                    file_id=str(document.get("file_id", "")).strip(),
+                    chat_id=int(chat_id),
+                    message_id=message_id,
+                    update_id=update_id,
+                    message_date=message_date,
+                    original_name=str(document.get("file_name", "")).strip(),
+                    mime_type=str(document.get("mime_type", "")).strip(),
+                    file_size=document.get("file_size"),
+                )
+            )
+
+        return images
 
     def delivery_chat_ids(self) -> list[int]:
         targets = set(self.allowed_chat_ids)
@@ -299,6 +506,7 @@ class TelegramBridge:
         user = message.get("from") or {}
         chat_id = chat.get("id")
         text = message.get("text", "")
+        caption = str(message.get("caption", ""))
         username = str(user.get("username", "")).strip()
 
         self._offset = update_id + 1
@@ -348,8 +556,17 @@ class TelegramBridge:
 
         self._remember_chat(int(chat_id), username)
 
-        if not text:
-            self.send_text(int(chat_id), "Only text messages are supported right now.")
+        try:
+            images = self._extract_message_images(message, update_id)
+        except Exception as exc:
+            self.display.system(
+                f"Telegram bridge image download error chat={chat_id}: {exc}"
+            )
+            self.send_text(int(chat_id), f"Failed to save Telegram image: {exc}")
+            return
+
+        if not text and not caption and not images:
+            self.send_text(int(chat_id), "Only text and image messages are supported right now.")
             return
 
         event = {
@@ -359,6 +576,8 @@ class TelegramBridge:
             "user_id": user.get("id"),
             "display_name": str(user.get("first_name") or chat.get("title") or chat_id),
             "text": text,
+            "caption": caption,
+            "images": images,
             "message_id": message.get("message_id"),
         }
         reply = self.handle_message(event)

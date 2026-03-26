@@ -10,7 +10,7 @@ OpenClaw Lite 是一個在 terminal 中運作的本地 agent。它透過 OpenAI-
 - prompt / skill / config 熱重載
 - agent-native 排程
 - Telegram bridge：live tool streaming、inline callbacks、訊息 edit
-- Notion page / database / row 操作與 architecture cache
+- Notion page / database / row 操作與 live `sync_architecture`
 - terminal 顯示分類：`[THINK]`、`[TOOL]`、`[SYSTEM]`
 - CLI 指令管理：model、cache、task、status
 
@@ -91,8 +91,8 @@ OpenClaw Lite 是一個在 terminal 中運作的本地 agent。它透過 OpenAI-
 - 讀取 Notion page / database / data source / row
 - 建立與更新 page、database、data source、row
 - 查詢 database / data source rows
-- 同步 Notion 結構到本地 architecture cache
-- 用 cache 快速定位 page / row / database
+- 即時同步 Notion 結構
+- 用 `sync_architecture` 快速定位 page / row / database
 
 支援 action：
 - `read_page`
@@ -113,19 +113,17 @@ OpenClaw Lite 是一個在 terminal 中運作的本地 agent。它透過 OpenAI-
 - `update_row`
 - `delete_row`
 - `restore_row`
-- `read_architecture_cache`
 - `sync_architecture`
 
-architecture cache：
-- 快取檔：`agent/SKILLs/notion_basic/scripts/temporary_data/notion_architecture.json`
-- agent 每次啟動時都會先把這份 cache 標成 `stale`
-- 成功的 Notion 寫入操作也會把 cache 標成 `stale`
-- 只有跑 `sync_architecture` 後才會回到 `fresh`
+architecture sync：
+- `sync_architecture` 會直接從 Notion 即時讀取 structure，不再讀寫本地 architecture cache
+- 每次呼叫的 `max_depth` 上限是 `3`
+- 如果需要更深層的樹，請改用較深的 page / database / data source 重新呼叫一次
 
 建議用法：
-- 找 Notion page / database / row 位置時，先用 `read_architecture_cache`
-- cache miss 或 cache stale，再跑 `sync_architecture`
-- 外部直接改 Notion 後，如果要依賴本地結構，也應重新同步
+- 找 Notion page / database / row 位置時，直接用 `sync_architecture`
+- 如果需要更深結構，改從較深的 page / database / data source 再呼叫一次
+- 外部直接改 Notion 後，不需要清本地 cache；重新跑 `sync_architecture` 即可
 
 ### 3. `schedule-task`
 
@@ -414,8 +412,6 @@ python agent\main.py
   file-control 備份索引
 - `agent/SKILLs/file_control/scripts/temporary_data/backups/`
   file-control 備份檔
-- `agent/SKILLs/notion_basic/scripts/temporary_data/notion_architecture.json`
-  Notion architecture cache；包含 `fresh/stale` 狀態
 - `agent/SKILLs/schedule_task/scripts/temporary_data/task_registry.json`
   正式排程 registry
 - `agent/data/system/telegram_bridge_state.json`
@@ -487,8 +483,8 @@ You: 把 2026-03-24 14:30 的台北時間換成 UTC
 - agent 每一步只期望一個 tool JSON object
 - 某些模型在長 history 下仍可能變不穩
 - `file-control` 備份儲存區不可由一般 skill 修改
-- Telegram bridge 支援文字訊息與 inline callback；圖片、語音、檔案等非文字輸入仍不支援
-- Notion architecture cache 只能保證反映最近一次 `sync_architecture`；如果外部直接改了 Notion，仍需要重新同步
+- Telegram bridge 支援文字訊息、圖片與 inline callback；語音與一般檔案仍不支援
+- `sync_architecture` 每次都直接讀取 Notion；單次呼叫深度上限為 `3`，更深需要從較深目標重新呼叫
 
 ## 補充
 

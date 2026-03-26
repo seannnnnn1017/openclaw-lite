@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Dict
+from typing import Any, Dict, List
 
 
 @dataclass
@@ -50,7 +50,7 @@ class AgentLayers:
 @dataclass
 class Message:
     role: str
-    content: str
+    content: Any
 
 
 @dataclass
@@ -59,6 +59,7 @@ class ChatRequest:
     messages: List[Message]
     temperature: float
     max_tokens: int
+    stream: bool = False
 
     def to_dict(self):
         return {
@@ -69,4 +70,5 @@ class ChatRequest:
             ],
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
+            "stream": self.stream,
         }

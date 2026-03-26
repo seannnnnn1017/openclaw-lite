@@ -16,7 +16,23 @@ Agent skill JSON:
 }
 ```
 
-## Example 2: Create a file with a backup record
+## Example 2: Read a local image file
+
+User request:
+`Read this Telegram-downloaded image and tell me what is in it`
+
+Agent skill JSON:
+```json
+{
+  "skill": "file-control",
+  "action": "read",
+  "args": {
+    "path": "agent/data/telegram_media/2026-03-25/chat_123/photo.png"
+  }
+}
+```
+
+## Example 3: Create a file with a backup record
 
 User request:
 `Create notes/todo.txt so I can start tracking tasks`
@@ -33,7 +49,7 @@ Agent skill JSON:
 }
 ```
 
-## Example 3: Overwrite a full file safely
+## Example 4: Overwrite a full file safely
 
 User request:
 `Replace notes/todo.txt with first line`
@@ -51,7 +67,7 @@ Agent skill JSON:
 }
 ```
 
-## Example 4: Append content safely
+## Example 5: Append content safely
 
 User request:
 `Append second line to notes/todo.txt`
@@ -69,7 +85,7 @@ Agent skill JSON:
 }
 ```
 
-## Example 5: Replace the first occurrence of text
+## Example 6: Replace the first occurrence of text
 
 User request:
 `In notes/todo.txt, change the first 'draft' to 'final'`
@@ -88,7 +104,7 @@ Agent skill JSON:
 }
 ```
 
-## Example 6: Replace all occurrences of text
+## Example 7: Replace all occurrences of text
 
 User request:
 `Replace every 'draft' in notes/todo.txt with 'final'`
@@ -108,7 +124,7 @@ Agent skill JSON:
 }
 ```
 
-## Example 7: Insert text after a target
+## Example 8: Insert text after a target
 
 User request:
 `After '## Tasks' in README.md, insert a new bullet for testing`
@@ -127,7 +143,7 @@ Agent skill JSON:
 }
 ```
 
-## Example 8: Insert text before a target
+## Example 9: Insert text before a target
 
 User request:
 `Before '## Footer' in README.md, insert a short summary block`
@@ -146,7 +162,7 @@ Agent skill JSON:
 }
 ```
 
-## Example 9: Delete a file with undo support
+## Example 10: Delete a file with undo support
 
 User request:
 `Delete notes/todo.txt`
@@ -166,7 +182,7 @@ Agent skill JSON:
 Expected result note:
 - Save the returned `backup_id` so the change can be restored later.
 
-## Example 10: Restore a previous version
+## Example 11: Restore a previous version
 
 User request:
 `Undo the last deletion using backup ID FILE-000003`

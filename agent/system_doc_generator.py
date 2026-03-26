@@ -26,7 +26,7 @@ CORE_COMPONENTS = [
     "agent/config_loader.py: loads config, prompts, enabled skills, and runtime model overrides",
     "agent/skill_server.py + agent/skill_runtime.py: skill request dispatch and tool loading",
     "agent/schedule_runtime.py + agent/chat_scheduler.py: schedule registry, due-task polling, result recording",
-    "agent/telegram_bridge.py: Telegram polling, allowlist checks, callback routing, message send/edit",
+    "agent/telegram_bridge.py: Telegram polling, allowlist checks, callback routing, message send/edit, image download/storage",
     "agent/terminal_display.py: terminal rendering plus Telegram tool-event capture",
     "agent/system_doc_generator.py: generates this file from current config and enabled skills",
 ]
@@ -89,14 +89,19 @@ def _skill_specific_notes(skill_name: str) -> list[str]:
     if skill_name == "file-control":
         return [
             "Mutating actions create backups before changing files.",
+            "The `read` action supports both text files and local image files; image reads can be attached back to the model for multimodal inspection.",
             "Backup storage is protected from ordinary skill edits and returns permission denied if targeted.",
             "Backup cleanup is not part of normal file-control operations.",
         ]
     if skill_name == "notion-basic":
         return [
             "Uses the Notion REST API and reads credentials from env vars or `agent/data/system/secrets.local.json`.",
+            "When no Notion page target is provided, the skill falls back to the default page configured in `agent/data/system/secrets.local.json` via `notion.default_parent_page_id` or `notion.default_parent_page_url`.",
             "Page content operations use Notion's markdown endpoints for full-page replace, append, and targeted search-and-replace.",
-            "A local architecture cache is stored in `agent/SKILLs/notion_basic/scripts/temporary_data/notion_architecture.json`; agent startup marks it stale and successful Notion write actions keep it stale until `sync_architecture` refreshes it.",
+            "Notion search uses the official `/search` API for shared page and data source title metadata only; it is not full-text attachment search.",
+            "Downloaded Notion images are saved locally under `agent/data/notion_downloads/` unless an explicit path is provided.",
+            "Structure discovery relies on live `sync_architecture` calls instead of a local architecture cache.",
+            "Each `sync_architecture` call is capped at depth 3; to inspect deeper structure, call it again from a deeper page, database, or data source target.",
             "Delete is implemented as moving a page to trash; the Notion API does not permanently delete pages.",
         ]
     if skill_name == "schedule-task":
@@ -123,7 +128,7 @@ def _skill_state_paths(skill_name: str, project_root: Path) -> list[str]:
         return [
             f"`{_relative_path(project_root / 'agent/data/system/secrets.example.json', project_root)}`: example shared secret configuration",
             f"`{_relative_path(project_root / 'agent/data/system/secrets.local.json', project_root)}`: ignored local shared secrets for LLM, Telegram, and Notion",
-            f"`{_relative_path(project_root / 'agent/SKILLs/notion_basic/scripts/temporary_data/notion_architecture.json', project_root)}`: local Notion architecture cache and freshness markers",
+            f"`{_relative_path(project_root / 'agent/data/notion_downloads', project_root)}/`: local downloads created by `notion-basic.download_image`",
         ]
     if skill_name == "schedule-task":
         return [
@@ -190,6 +195,7 @@ def generate_system_architecture(config) -> Path:
         f"allowed chat IDs={len(config.telegram_allowed_chat_ids)}",
     ]
     telegram_state_rel = _relative_path(Path(config.telegram_state_path), project_root)
+    telegram_image_storage_rel = _relative_path(Path(config.telegram_image_storage_path), project_root)
     enabled_skill_names = [skill.get("name", "") for skill in config.skills]
 
     snapshot_lines = [
@@ -199,6 +205,7 @@ def generate_system_architecture(config) -> Path:
         f"Skill server URL: `{config.skill_server_url}`",
         f"Telegram bridge enabled: {'yes' if config.telegram_enabled else 'no'}",
         f"Telegram polling: timeout={config.telegram_poll_timeout_seconds}s, retry_delay={config.telegram_retry_delay_seconds}s, skip_pending_on_start={'yes' if config.telegram_skip_pending_updates_on_start else 'no'}",
+        f"Telegram image storage: `{telegram_image_storage_rel}`",
         f"Telegram allowlist summary: {', '.join(telegram_allowlist_parts)}",
         f"Enabled skills ({len(enabled_skill_names)}): {', '.join(f'`{name}`' for name in enabled_skill_names)}",
     ]
@@ -222,15 +229,18 @@ def generate_system_architecture(config) -> Path:
         f"`{_relative_path(config.path, project_root)}`: non-secret runtime config",
         f"`{_relative_path(agent_root / 'data/system/secrets.local.json', project_root)}`: local secrets for LLM, Telegram, Notion",
         f"`{telegram_state_rel}`: Telegram offset + known chats",
+        f"`{telegram_image_storage_rel}/`: downloaded Telegram image files",
         f"`{_relative_path(agent_root / 'SKILLs/schedule_task/scripts/temporary_data/task_registry.json', project_root)}`: schedule registry",
-        f"`{_relative_path(agent_root / 'SKILLs/notion_basic/scripts/temporary_data/notion_architecture.json', project_root)}`: Notion architecture cache",
         f"`{_relative_path(agent_root / 'data/memories', project_root)}/`: persistent memory store",
         f"`{_relative_path(output_path, project_root)}`: this generated system map",
     ]
 
     telegram_lines = [
-        "Handles text messages plus `callback_query` inline actions.",
+        "Handles text messages, inbound image messages, plus `callback_query` inline actions.",
         "Telegram sessions are isolated per `chat_id`.",
+        "Incoming Telegram photos and image documents are downloaded and stored locally before the event reaches the agent.",
+        "For the current Telegram image turn, saved images are attached to the model request as OpenAI-compatible `image_url` content parts, while session history keeps a compact text record with the saved local paths.",
+        "Direct Telegram chat replies use throttled rolling edits at roughly 300 ms intervals when streamed model text looks like a user-facing answer.",
         "Tool activity is streamed live as compact `[TOOL] skill.action` messages and edited in place with results.",
         "Inline controls: `展開` / `收合` for tool details, `編輯` / `刪除` for scheduled-task notifications.",
         "If only usernames are allowlisted, the bot must first receive a message from that chat before scheduled-task push works.",
@@ -247,7 +257,7 @@ def generate_system_architecture(config) -> Path:
         "`/task ...` commands manipulate the schedule registry directly and do not require the LLM.",
         "`/clear cache` only deletes `.codex-temp` directories.",
         "`schedule-task` is agent-native; tasks stop when the agent process stops.",
-        "Agent startup marks the Notion architecture cache stale until `sync_architecture` refreshes it.",
+        "Notion structure inspection now uses live `sync_architecture` calls with a maximum depth of 3 per call.",
         "Secrets should stay in `agent/data/system/secrets.local.json` or environment variables.",
     ]
 

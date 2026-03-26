@@ -1,17 +1,33 @@
 User request:
-"Where is the Notion item named hello?"
+"Search Notion for dinner-related pages"
 
 Tool JSON:
 ```json
-{"skill":"notion-basic","action":"read_architecture_cache","args":{"lookup_title":"hello","object_type":"row"}}
+{"skill":"notion-basic","action":"search","args":{"search_query":"Dinner","object_type":"page","page_size":10}}
 ```
 
 User request:
-"Sync the full Notion structure into local JSON"
+"Read the configured default Notion page"
 
 Tool JSON:
 ```json
-{"skill":"notion-basic","action":"sync_architecture","args":{"page_url":"https://www.notion.so/Claw-lite-32e5aafddb3b80a5a0ebc5d49ec41b5f","max_depth":4}}
+{"skill":"notion-basic","action":"read_page","args":{}}
+```
+
+User request:
+"Sync the configured default Notion page structure"
+
+Tool JSON:
+```json
+{"skill":"notion-basic","action":"sync_architecture","args":{"max_depth":3}}
+```
+
+User request:
+"Sync the full Notion structure live from Notion"
+
+Tool JSON:
+```json
+{"skill":"notion-basic","action":"sync_architecture","args":{"page_url":"https://www.notion.so/Claw-lite-32e5aafddb3b80a5a0ebc5d49ec41b5f","max_depth":3}}
 ```
 
 User request:
@@ -28,6 +44,30 @@ User request:
 Tool JSON:
 ```json
 {"skill":"notion-basic","action":"create_page","args":{"title":"Daily Summary","content":"# Daily Summary\n\n## Highlights\n\n- Item 1\n- Item 2"}}
+```
+
+User request:
+"Upload this local screenshot into the Claw-lite Notion page"
+
+Tool JSON:
+```json
+{"skill":"notion-basic","action":"upload_image","args":{"page_url":"https://www.notion.so/Claw-lite-32e5aafddb3b80a5a0ebc5d49ec41b5f","image_path":"assets/screenshot.png","caption":"Latest UI screenshot"}}
+```
+
+User request:
+"Download the first image from this Notion page to local disk"
+
+Tool JSON:
+```json
+{"skill":"notion-basic","action":"download_image","args":{"page_id":"32e5aafd-db3b-80a5-a0eb-c5d49ec41b5f","image_index":1}}
+```
+
+User request:
+"Upload the Telegram-downloaded local photo into this Notion page"
+
+Tool JSON:
+```json
+{"skill":"notion-basic","action":"upload_image","args":{"page_id":"32e5aafd-db3b-80a5-a0eb-c5d49ec41b5f","local_image_path":"agent/data/telegram_media/2026-03-25/chat_123/photo.png","caption":"User-provided local photo"}}
 ```
 
 User request:

@@ -1,4 +1,5 @@
 import json
+import mimetypes
 import os
 import re
 import sys
@@ -23,13 +24,28 @@ except ModuleNotFoundError:
 NOTION_API_BASE = "https://api.notion.com/v1"
 DEFAULT_NOTION_VERSION = "2026-03-11"
 DEFAULT_REAL_ALL_PAGE_SIZE = 100
-DEFAULT_REAL_ALL_MAX_DEPTH = 5
-TEMP_DIR = SCRIPT_DIR / "temporary_data"
-ARCHITECTURE_CACHE_FILE = TEMP_DIR / "notion_architecture.json"
+DEFAULT_REAL_ALL_MAX_DEPTH = 3
+MAX_NOTION_SINGLE_PART_UPLOAD_BYTES = 20 * 1024 * 1024
+NOTION_DOWNLOAD_DIR = AGENT_ROOT / "data" / "notion_downloads"
 UUID_PATTERN = re.compile(
     r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})"
 )
 MARKDOWN_CHILD_PATTERN = re.compile(r"<(page|database)\s+url=\"([^\"]+)\"", re.IGNORECASE)
+KNOWN_IMAGE_MIME_TYPES = {
+    ".avif": "image/avif",
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".webp": "image/webp",
+}
+FILENAME_SAFE_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def ok(action: str, path: str, data=None, message: str = ""):
@@ -56,172 +72,8 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _empty_architecture_cache() -> dict:
-    return {
-        "updated_at": "",
-        "sync_status": "fresh",
-        "stale_marked_at": "",
-        "stale_reason": "",
-        "last_mutation": {},
-        "snapshots": {},
-    }
-
-
-def _normalize_architecture_cache(data) -> dict:
-    normalized = _empty_architecture_cache()
-    if not isinstance(data, dict):
-        return normalized
-
-    normalized["updated_at"] = str(data.get("updated_at", "")).strip()
-
-    sync_status = str(data.get("sync_status", "")).strip().lower()
-    normalized["sync_status"] = "stale" if sync_status == "stale" else "fresh"
-
-    if normalized["sync_status"] == "stale":
-        normalized["stale_marked_at"] = str(data.get("stale_marked_at", "")).strip()
-        normalized["stale_reason"] = str(data.get("stale_reason", "")).strip()
-
-    last_mutation = data.get("last_mutation", {})
-    if isinstance(last_mutation, dict):
-        normalized["last_mutation"] = last_mutation
-
-    snapshots = data.get("snapshots", {})
-    if isinstance(snapshots, dict):
-        normalized["snapshots"] = snapshots
-
-    return normalized
-
-
-def _architecture_cache_status_payload(cache: dict) -> dict:
-    normalized = _normalize_architecture_cache(cache)
-    return {
-        "cache_path": str(ARCHITECTURE_CACHE_FILE),
-        "updated_at": normalized.get("updated_at", ""),
-        "sync_status": normalized.get("sync_status", "fresh"),
-        "is_stale": normalized.get("sync_status") == "stale",
-        "stale_marked_at": normalized.get("stale_marked_at", ""),
-        "stale_reason": normalized.get("stale_reason", ""),
-        "last_mutation": normalized.get("last_mutation", {}),
-    }
-
-
-def _ensure_architecture_storage():
-    TEMP_DIR.mkdir(parents=True, exist_ok=True)
-    if not ARCHITECTURE_CACHE_FILE.exists():
-        ARCHITECTURE_CACHE_FILE.write_text(
-            json.dumps(_empty_architecture_cache(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-
-def _load_architecture_cache() -> dict:
-    _ensure_architecture_storage()
-    raw = ARCHITECTURE_CACHE_FILE.read_text(encoding="utf-8").strip()
-    if not raw:
-        return _empty_architecture_cache()
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return _empty_architecture_cache()
-
-    return _normalize_architecture_cache(data)
-
-
-def _save_architecture_cache(data: dict):
-    _ensure_architecture_storage()
-    ARCHITECTURE_CACHE_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def _save_architecture_snapshot(snapshot: dict) -> str:
-    cache = _load_architecture_cache()
-    root = snapshot.get("root") or {}
-    root_key = f"{root.get('type', 'unknown')}:{root.get('id', 'unknown')}"
-    cache["updated_at"] = _utc_now_iso()
-    cache["sync_status"] = "fresh"
-    cache["stale_marked_at"] = ""
-    cache["stale_reason"] = ""
-    cache["snapshots"][root_key] = snapshot
-    _save_architecture_cache(cache)
-    return str(ARCHITECTURE_CACHE_FILE)
-
-
-def _mark_architecture_stale(
-    *,
-    action: str,
-    path: str,
-    reason: str = "",
-    update_last_mutation: bool = True,
-) -> dict:
-    cache = _load_architecture_cache()
-    marked_at = _utc_now_iso()
-    stale_reason = str(reason or "").strip() or f"Successful Notion mutation via {action}"
-    cache["sync_status"] = "stale"
-    cache["stale_marked_at"] = marked_at
-    cache["stale_reason"] = stale_reason
-    if update_last_mutation:
-        cache["last_mutation"] = {
-            "action": str(action or "").strip(),
-            "path": str(path or "").strip(),
-            "marked_at": marked_at,
-            "reason": stale_reason,
-        }
-    _save_architecture_cache(cache)
-    return _architecture_cache_status_payload(cache)
-
-
-def mark_architecture_cache_stale_on_agent_startup() -> dict:
-    return _mark_architecture_stale(
-        action="agent_startup",
-        path=str(ARCHITECTURE_CACHE_FILE),
-        reason=(
-            "Agent restarted; refresh Notion architecture before relying on cached structure."
-        ),
-        update_last_mutation=False,
-    )
-
-
 def _mark_result_architecture_stale(result: dict, *, reason: str = "") -> dict:
-    if not isinstance(result, dict) or result.get("status") != "ok":
-        return result
-
-    cache_status = _mark_architecture_stale(
-        action=str(result.get("action", "")).strip(),
-        path=str(result.get("path", "")).strip(),
-        reason=reason,
-    )
-
-    existing_data = result.get("data")
-    if not isinstance(existing_data, dict):
-        existing_data = {"value": existing_data}
-        result["data"] = existing_data
-
-    existing_data["architecture_cache"] = cache_status
-    message = str(result.get("message", "")).strip() or "Success"
-    result["message"] = (
-        f"{message} Architecture cache marked stale; run sync_architecture before relying on cached structure."
-    )
     return result
-
-
-def _normalize_object_type(value: str) -> str:
-    normalized = str(value or "").strip().lower()
-    aliases = {
-        "page": "page",
-        "pages": "page",
-        "database": "database",
-        "databases": "database",
-        "data_source": "data_source",
-        "data-source": "data_source",
-        "data_sources": "data_source",
-        "data-sources": "data_source",
-        "row": "row",
-        "rows": "row",
-    }
-    return aliases.get(normalized, normalized)
 
 
 def _normalize_uuid(raw_value: str) -> str:
@@ -302,6 +154,192 @@ def _request_json(
     req = request.Request(url=url, data=payload, headers=headers, method=method.upper())
     try:
         with request.urlopen(req, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except error.HTTPError as exc:
+        raw_detail = exc.read().decode("utf-8", errors="replace")
+        detail = {"raw": raw_detail}
+        try:
+            detail = json.loads(raw_detail)
+        except json.JSONDecodeError:
+            pass
+        message = detail.get("message") if isinstance(detail, dict) else raw_detail
+        code = detail.get("code") if isinstance(detail, dict) else ""
+        raise RuntimeError(
+            f"Notion HTTP {exc.code}: {code or 'request_failed'}: {message or raw_detail}"
+        ) from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"Notion unavailable: {exc.reason}") from exc
+
+
+def _safe_local_path(path: str) -> str:
+    normalized = Path(path).expanduser()
+    if not normalized.is_absolute():
+        normalized = Path.cwd() / normalized
+    return str(normalized.resolve())
+
+
+def _resolve_local_file(path: str, *, field_name: str) -> Path:
+    cleaned = str(path or "").strip()
+    if not cleaned:
+        raise ValueError(f"{field_name} is required")
+
+    resolved = Path(_safe_local_path(cleaned))
+    if not resolved.exists():
+        raise FileNotFoundError(f"{field_name} not found: {resolved}")
+    if not resolved.is_file():
+        raise ValueError(f"{field_name} must be a file: {resolved}")
+    return resolved
+
+
+def _guess_image_content_type(file_path: Path) -> str:
+    mime_type, _ = mimetypes.guess_type(str(file_path))
+    if mime_type and mime_type.startswith("image/"):
+        return mime_type
+
+    fallback = KNOWN_IMAGE_MIME_TYPES.get(file_path.suffix.lower(), "")
+    if fallback:
+        return fallback
+
+    raise ValueError(
+        f"Unsupported image file type for Notion upload: {file_path.name}. "
+        "Use a standard image extension such as .png, .jpg, .jpeg, .gif, .webp, or .svg."
+    )
+
+
+def _guess_extension_from_content_type(content_type: str) -> str:
+    guessed = mimetypes.guess_extension(str(content_type or "").strip())
+    if not guessed:
+        return ""
+    return ".jpg" if guessed == ".jpe" else guessed
+
+
+def _sanitize_filename(filename: str, *, fallback: str) -> str:
+    cleaned = FILENAME_SAFE_PATTERN.sub("_", str(filename or "").strip()).strip("._")
+    return cleaned or fallback
+
+
+def _default_notion_download_dir() -> Path:
+    target_dir = NOTION_DOWNLOAD_DIR / datetime.now().astimezone().strftime("%Y-%m-%d")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir
+
+
+def _download_binary_from_url(url: str) -> tuple[bytes, object]:
+    cleaned = str(url or "").strip()
+    if not cleaned:
+        raise ValueError("download URL is missing")
+
+    req = request.Request(url=cleaned, method="GET")
+    try:
+        with request.urlopen(req, timeout=60) as response:
+            return response.read(), response.info()
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Download failed with HTTP {exc.code}: {detail or exc.reason}") from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"Download failed: {exc.reason}") from exc
+
+
+def _save_downloaded_bytes(
+    *,
+    payload: bytes,
+    source_url: str,
+    filename: str = "",
+    save_path: str = "",
+    save_dir: str = "",
+    content_type: str = "",
+    fallback_stem: str,
+) -> Path:
+    explicit_save_path = str(save_path or "").strip()
+    if explicit_save_path:
+        resolved = Path(_safe_local_path(explicit_save_path))
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        resolved.write_bytes(payload)
+        return resolved
+
+    target_dir = Path(_safe_local_path(save_dir)) if str(save_dir or "").strip() else _default_notion_download_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    parsed_url = parse.urlparse(str(source_url or "").strip())
+    url_name = Path(parsed_url.path).name
+    candidate_name = str(filename or "").strip() or url_name
+    extension = Path(candidate_name).suffix.lower()
+    if not extension:
+        extension = Path(url_name).suffix.lower()
+    if not extension:
+        extension = _guess_extension_from_content_type(content_type)
+    if not extension:
+        extension = ".img"
+
+    stem = Path(candidate_name).stem if candidate_name else ""
+    safe_name = _sanitize_filename(f"{stem}{extension}", fallback=f"{fallback_stem}{extension}")
+    output_path = target_dir / safe_name
+    output_path.write_bytes(payload)
+    return output_path
+
+
+def _multipart_request_json(
+    runtime_config: dict,
+    *,
+    method: str,
+    path: str,
+    form_fields: list[tuple[str, str]] | None = None,
+    files: list[dict] | None = None,
+):
+    api_key = runtime_config.get("api_key", "").strip()
+    if not api_key:
+        raise ValueError(
+            f"Notion API key is not configured. Set OPENCLAW_NOTION_API_KEY or create {SECRET_CONFIG_PATH}."
+        )
+
+    boundary = f"----OpenClawNotionBoundary{os.urandom(12).hex()}"
+    body_chunks = []
+
+    for field_name, field_value in form_fields or []:
+        body_chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("utf-8"),
+                f'Content-Disposition: form-data; name="{field_name}"\r\n\r\n'.encode("utf-8"),
+                str(field_value).encode("utf-8"),
+                b"\r\n",
+            ]
+        )
+
+    for item in files or []:
+        filename = str(item.get("filename", "upload.bin"))
+        content_type = str(item.get("content_type", "application/octet-stream"))
+        payload = item.get("content", b"")
+        if not isinstance(payload, (bytes, bytearray)):
+            raise ValueError("multipart file content must be bytes")
+
+        body_chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("utf-8"),
+                (
+                    f'Content-Disposition: form-data; name="{item.get("field_name", "file")}"; '
+                    f'filename="{filename}"\r\n'
+                ).encode("utf-8"),
+                f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"),
+                bytes(payload),
+                b"\r\n",
+            ]
+        )
+
+    body_chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    payload = b"".join(body_chunks)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Notion-Version": runtime_config.get("notion_version", DEFAULT_NOTION_VERSION),
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+    }
+    req = request.Request(
+        url=f"{NOTION_API_BASE}{path}",
+        data=payload,
+        headers=headers,
+        method=method.upper(),
+    )
+    try:
+        with request.urlopen(req, timeout=60) as response:
             return json.loads(response.read().decode("utf-8"))
     except error.HTTPError as exc:
         raw_detail = exc.read().decode("utf-8", errors="replace")
@@ -538,6 +576,246 @@ def _extract_h1_title(markdown: str) -> str:
         if stripped.startswith("# "):
             return stripped[2:].strip()
     return ""
+
+
+def _file_upload_summary(file_upload_obj: dict) -> dict:
+    return {
+        "id": file_upload_obj.get("id", ""),
+        "status": file_upload_obj.get("status", ""),
+        "filename": file_upload_obj.get("filename", ""),
+        "content_type": file_upload_obj.get("content_type", ""),
+        "content_length": file_upload_obj.get("content_length"),
+        "expiry_time": file_upload_obj.get("expiry_time", ""),
+        "upload_url": file_upload_obj.get("upload_url", ""),
+        "complete_url": file_upload_obj.get("complete_url", ""),
+        "in_trash": bool(
+            file_upload_obj.get("in_trash", file_upload_obj.get("archived", False))
+        ),
+    }
+
+
+def _list_block_children(runtime_config: dict, *, parent_block_id: str) -> list[dict]:
+    items = []
+    next_cursor = ""
+
+    while True:
+        query = {"page_size": 100}
+        if str(next_cursor).strip():
+            query["start_cursor"] = next_cursor
+        response = _request_json(
+            runtime_config,
+            method="GET",
+            path=f"/blocks/{parent_block_id}/children",
+            query=query,
+        )
+        batch = response.get("results") or []
+        items.extend(item for item in batch if isinstance(item, dict))
+        next_cursor = response.get("next_cursor") or ""
+        if not response.get("has_more") or not next_cursor:
+            break
+
+    return items
+
+
+def _block_file_download_info(block_obj: dict) -> dict | None:
+    block_type = str(block_obj.get("type", "")).strip()
+    if block_type != "image":
+        return None
+
+    payload = block_obj.get(block_type) or {}
+    if not isinstance(payload, dict):
+        return None
+
+    file_kind = str(payload.get("type", "")).strip()
+    info = {
+        "block_id": block_obj.get("id", ""),
+        "block_type": block_type,
+        "caption": _plain_text_from_rich_text(payload.get("caption", [])),
+        "file_kind": file_kind,
+        "has_download_url": False,
+    }
+
+    if file_kind == "file":
+        file_obj = payload.get("file") or {}
+        info["download_url"] = str(file_obj.get("url", "")).strip()
+        info["expiry_time"] = str(file_obj.get("expiry_time", "")).strip()
+        info["has_download_url"] = bool(info["download_url"])
+        return info
+
+    if file_kind == "external":
+        file_obj = payload.get("external") or {}
+        info["download_url"] = str(file_obj.get("url", "")).strip()
+        info["has_download_url"] = bool(info["download_url"])
+        return info
+
+    if file_kind == "file_upload":
+        file_obj = payload.get("file_upload") or {}
+        info["file_upload_id"] = str(file_obj.get("id", "")).strip()
+        return info
+
+    return None
+
+
+def _collect_page_image_blocks(
+    runtime_config: dict,
+    *,
+    parent_block_id: str,
+    recursive: bool = True,
+) -> list[dict]:
+    found = []
+    queue = [str(parent_block_id).strip()]
+    visited = set()
+
+    while queue:
+        current_id = queue.pop(0)
+        if not current_id or current_id in visited:
+            continue
+        visited.add(current_id)
+
+        for child in _list_block_children(runtime_config, parent_block_id=current_id):
+            image_info = _block_file_download_info(child)
+            if image_info:
+                found.append(image_info)
+
+            if recursive and bool(child.get("has_children")):
+                child_id = str(child.get("id", "")).strip()
+                if child_id and child_id not in visited:
+                    queue.append(child_id)
+
+    return found
+
+
+def _download_image(
+    runtime_config: dict,
+    *,
+    target_page_id: str = "",
+    target_block_id: str = "",
+    image_index: int = 1,
+    save_path: str = "",
+    save_dir: str = "",
+    filename: str = "",
+    recursive: bool = True,
+) -> dict:
+    if str(target_block_id or "").strip():
+        block_obj = _request_json(runtime_config, method="GET", path=f"/blocks/{target_block_id}")
+        candidate_images = []
+        image_info = _block_file_download_info(block_obj)
+        if image_info:
+            candidate_images.append(image_info)
+    else:
+        if not str(target_page_id or "").strip():
+            raise ValueError("download_image requires page_id, page_url, block_id, or block_url")
+        candidate_images = _collect_page_image_blocks(
+            runtime_config,
+            parent_block_id=target_page_id,
+            recursive=bool(recursive),
+        )
+
+    available_images = [item for item in candidate_images if item.get("has_download_url")]
+    if not available_images:
+        if candidate_images and any(item.get("file_kind") == "file_upload" for item in candidate_images):
+            raise RuntimeError(
+                "Found image blocks, but Notion has not exposed a downloadable file URL yet. "
+                "Try again later after the file upload finishes processing."
+            )
+        raise RuntimeError("No downloadable image block was found on the target page or block.")
+
+    effective_index = max(1, int(image_index)) - 1
+    if effective_index >= len(available_images):
+        raise ValueError(
+            f"image_index {image_index} is out of range; found {len(available_images)} downloadable image(s)."
+        )
+
+    selected = available_images[effective_index]
+    download_url = str(selected.get("download_url", "")).strip()
+    payload, response_info = _download_binary_from_url(download_url)
+    content_type = str(getattr(response_info, "get_content_type", lambda: "")() or "").strip()
+    saved_path = _save_downloaded_bytes(
+        payload=payload,
+        source_url=download_url,
+        filename=filename,
+        save_path=save_path,
+        save_dir=save_dir,
+        content_type=content_type,
+        fallback_stem=f"notion_image_{selected.get('block_id', '')[:8] or 'download'}",
+    )
+
+    path_hint = str(target_block_id or target_page_id)
+    data = {
+        "page_id": target_page_id,
+        "block_id": selected.get("block_id", ""),
+        "image_index": effective_index + 1,
+        "candidate_count": len(available_images),
+        "local_path": str(saved_path),
+        "filename": saved_path.name,
+        "size_bytes": len(payload),
+        "download_url": download_url,
+        "file_kind": selected.get("file_kind", ""),
+        "block_type": selected.get("block_type", ""),
+        "caption": selected.get("caption", ""),
+        "content_type": content_type,
+    }
+    expiry_time = str(selected.get("expiry_time", "")).strip()
+    if expiry_time:
+        data["expiry_time"] = expiry_time
+
+    return ok(
+        action="download_image",
+        path=path_hint,
+        message="Image downloaded from Notion successfully",
+        data=data,
+    )
+
+
+def _search(
+    runtime_config: dict,
+    *,
+    query_text: str = "",
+    object_type: str = "",
+    page_size: int | None = None,
+    start_cursor: str = "",
+    sort_timestamp: str = "",
+    sort_direction: str = "",
+    body: dict | None = None,
+) -> dict:
+    request_body = dict(body or {})
+    cleaned_query = str(query_text or "").strip()
+    if cleaned_query:
+        request_body["query"] = cleaned_query
+
+    cleaned_object_type = str(object_type or "").strip().lower()
+    if cleaned_object_type:
+        if cleaned_object_type not in {"page", "data_source"}:
+            raise ValueError("search object_type must be `page` or `data_source`")
+        request_body["filter"] = {"property": "object", "value": cleaned_object_type}
+
+    if page_size not in (None, ""):
+        request_body["page_size"] = int(page_size)
+    if str(start_cursor or "").strip():
+        request_body["start_cursor"] = str(start_cursor)
+
+    cleaned_sort_timestamp = str(sort_timestamp or "").strip()
+    cleaned_sort_direction = str(sort_direction or "").strip()
+    if cleaned_sort_timestamp or cleaned_sort_direction:
+        request_body["sort"] = {
+            "timestamp": cleaned_sort_timestamp or "last_edited_time",
+            "direction": cleaned_sort_direction or "descending",
+        }
+
+    search_obj = _request_json(runtime_config, method="POST", path="/search", body=request_body)
+    data = _query_result_summary(search_obj)
+    data["query_text"] = cleaned_query
+    data["object_type"] = cleaned_object_type
+    data["official_limit_note"] = (
+        "Notion search matches shared pages and data sources by title metadata. "
+        "It does not provide full-text search over page content or attachment contents."
+    )
+    return ok(
+        action="search",
+        path=cleaned_query,
+        message="Notion search completed successfully",
+        data=data,
+    )
 
 
 def _pick_single_data_source(database_obj: dict) -> str:
@@ -808,6 +1086,11 @@ def _sync_architecture(
 
     if not root_id:
         raise ValueError("sync_architecture requires a page, database, or data source target")
+    if int(max_depth) > DEFAULT_REAL_ALL_MAX_DEPTH:
+        raise ValueError(
+            f"sync_architecture max_depth cannot exceed {DEFAULT_REAL_ALL_MAX_DEPTH}. "
+            "If you need to go deeper, call sync_architecture again from a deeper page, database, or data source target."
+        )
 
     snapshot = _new_architecture_snapshot(
         root_type,
@@ -842,141 +1125,18 @@ def _sync_architecture(
             snapshot,
             target_data_source_id=root_id,
             query_body=query_body,
-        )
+    )
 
     snapshot = _finalize_architecture_snapshot(snapshot)
-    cache_path = _save_architecture_snapshot(snapshot)
     return ok(
         action=action_name,
         path=root_id,
         message="Notion architecture synced successfully",
         data={
-            "cache_path": cache_path,
             "snapshot": snapshot,
+            "max_depth_limit": DEFAULT_REAL_ALL_MAX_DEPTH,
+            "call_again_for_deeper_traversal": True,
         },
-    )
-
-
-def _read_architecture_cache(
-    *,
-    lookup_id: str = "",
-    lookup_url: str = "",
-    lookup_title: str = "",
-    object_type: str = "",
-    include_snapshot: bool = False,
-) -> dict:
-    cache = _load_architecture_cache()
-    cache_status = _architecture_cache_status_payload(cache)
-    had_lookup = bool(
-        str(lookup_id or "").strip()
-        or str(lookup_url or "").strip()
-        or str(lookup_title or "").strip()
-        or str(object_type or "").strip()
-    )
-    normalized_lookup_id = ""
-    if str(lookup_id or lookup_url).strip():
-        normalized_lookup_id = _extract_notion_id(lookup_url or lookup_id)
-
-    normalized_title = str(lookup_title or "").strip().lower()
-    normalized_object_type = _normalize_object_type(object_type)
-    snapshot_summaries = []
-    matches = []
-
-    bucket_types = (
-        ("pages", "page"),
-        ("databases", "database"),
-        ("data_sources", "data_source"),
-        ("rows", "row"),
-    )
-
-    for snapshot_key, snapshot in (cache.get("snapshots") or {}).items():
-        if not isinstance(snapshot, dict):
-            continue
-
-        root = snapshot.get("root") or {}
-        counts = snapshot.get("counts") or {}
-        snapshot_summaries.append(
-            {
-                "snapshot_key": snapshot_key,
-                "generated_at": snapshot.get("generated_at", ""),
-                "root": root,
-                "counts": counts,
-            }
-        )
-
-        for bucket_name, bucket_type in bucket_types:
-            if normalized_object_type and normalized_object_type != bucket_type:
-                continue
-
-            for item_id, item in (snapshot.get(bucket_name) or {}).items():
-                if not isinstance(item, dict):
-                    continue
-
-                if normalized_lookup_id and str(item_id) != normalized_lookup_id:
-                    continue
-
-                title_value = str(item.get("title") or "").strip()
-                if normalized_title and normalized_title not in title_value.lower():
-                    continue
-
-                matches.append(
-                    {
-                        "snapshot_key": snapshot_key,
-                        "bucket": bucket_name,
-                        "object_type": bucket_type,
-                        "id": item_id,
-                        "title": title_value,
-                        "url": item.get("url", ""),
-                        "parent_type": item.get("parent_type", ""),
-                        "parent_page_id": item.get("parent_page_id", ""),
-                        "parent_database_id": item.get("parent_database_id", ""),
-                        "parent_data_source_id": item.get("parent_data_source_id", ""),
-                        "root": root,
-                    }
-                )
-
-    data = {
-        "cache_path": str(ARCHITECTURE_CACHE_FILE),
-        "updated_at": cache.get("updated_at", ""),
-        "architecture_cache": cache_status,
-        "snapshot_count": len(snapshot_summaries),
-        "snapshots": snapshot_summaries,
-        "matches": matches,
-        "match_count": len(matches),
-        "lookup": {
-            "lookup_id": normalized_lookup_id,
-            "lookup_title": str(lookup_title or "").strip(),
-            "object_type": normalized_object_type,
-        },
-    }
-    cache_miss = bool(had_lookup and not matches)
-    cache_is_stale = bool(cache_status.get("is_stale"))
-    data["cache_miss"] = cache_miss
-    data["should_sync_architecture"] = cache_miss or cache_is_stale
-    if data["should_sync_architecture"]:
-        data["recommended_next_action"] = "sync_architecture"
-    if include_snapshot or (not normalized_lookup_id and not normalized_title and not normalized_object_type):
-        data["cache"] = cache
-
-    message = "Architecture cache read successfully"
-    if cache_is_stale and cache_miss:
-        message = (
-            "Architecture cache is marked stale and no cached match was found. "
-            "Run sync_architecture before concluding the item is missing."
-        )
-    elif cache_is_stale:
-        message = (
-            "Architecture cache is marked stale. "
-            "Run sync_architecture before relying on cached structure."
-        )
-    elif cache_miss:
-        message = "No cached match found. Run sync_architecture before concluding the item is missing."
-
-    return ok(
-        action="read_architecture_cache",
-        path=str(ARCHITECTURE_CACHE_FILE),
-        message=message,
-        data=data,
     )
 
 
@@ -1112,6 +1272,143 @@ def _append_page(
         action="append_page",
         path=target_page_id,
         message="Page content appended successfully",
+        data=data,
+    )
+
+
+def _create_notion_file_upload(runtime_config: dict, *, file_path: Path, content_type: str) -> dict:
+    return _request_json(
+        runtime_config,
+        method="POST",
+        path="/file_uploads",
+        body={
+            "mode": "single_part",
+            "filename": file_path.name,
+            "content_type": content_type,
+        },
+    )
+
+
+def _send_notion_file_upload(runtime_config: dict, *, file_upload_id: str, file_path: Path, content_type: str) -> dict:
+    file_bytes = file_path.read_bytes()
+    if len(file_bytes) > MAX_NOTION_SINGLE_PART_UPLOAD_BYTES:
+        raise ValueError(
+            "upload_image currently supports single-part Notion uploads up to "
+            f"{MAX_NOTION_SINGLE_PART_UPLOAD_BYTES} bytes; got {len(file_bytes)} bytes."
+        )
+
+    return _multipart_request_json(
+        runtime_config,
+        method="POST",
+        path=f"/file_uploads/{file_upload_id}/send",
+        files=[
+            {
+                "field_name": "file",
+                "filename": file_path.name,
+                "content_type": content_type,
+                "content": file_bytes,
+            }
+        ],
+    )
+
+
+def _append_block_children(
+    runtime_config: dict,
+    *,
+    target_block_id: str,
+    children: list[dict],
+    after_block_id: str = "",
+) -> dict:
+    request_body = {
+        "children": children,
+    }
+    if str(after_block_id or "").strip():
+        request_body["position"] = {
+            "type": "after_block",
+            "after_block": {
+                "id": _extract_notion_id(after_block_id),
+            },
+        }
+    return _request_json(
+        runtime_config,
+        method="PATCH",
+        path=f"/blocks/{target_block_id}/children",
+        body=request_body,
+    )
+
+
+def _upload_image(
+    runtime_config: dict,
+    *,
+    target_page_id: str,
+    image_path: str,
+    caption="",
+    after: str = "",
+) -> dict:
+    local_image_path = _resolve_local_file(image_path, field_name="image_path")
+    content_type = _guess_image_content_type(local_image_path)
+    created_upload = _create_notion_file_upload(
+        runtime_config,
+        file_path=local_image_path,
+        content_type=content_type,
+    )
+    file_upload_id = str(created_upload.get("id", "")).strip()
+    if not file_upload_id:
+        raise RuntimeError("Notion file upload creation did not return an upload ID.")
+
+    sent_upload = _send_notion_file_upload(
+        runtime_config,
+        file_upload_id=file_upload_id,
+        file_path=local_image_path,
+        content_type=content_type,
+    )
+    if str(sent_upload.get("status", "")).strip().lower() != "uploaded":
+        raise RuntimeError(
+            "Notion file upload did not reach uploaded status. "
+            f"Current status: {sent_upload.get('status', '') or '-'}"
+        )
+    caption_payload = _to_rich_text_array(caption, "caption")
+    append_result = _append_block_children(
+        runtime_config,
+        target_block_id=target_page_id,
+        after_block_id=after,
+        children=[
+            {
+                "object": "block",
+                "type": "image",
+                "image": {
+                    "type": "file_upload",
+                    "file_upload": {
+                        "id": file_upload_id,
+                    },
+                    "caption": caption_payload,
+                },
+            }
+        ],
+    )
+    page_obj = _request_json(runtime_config, method="GET", path=f"/pages/{target_page_id}")
+    markdown_obj = _request_json(runtime_config, method="GET", path=f"/pages/{target_page_id}/markdown")
+    data = _page_summary(page_obj)
+    data.update(_markdown_summary(markdown_obj))
+    data["local_image_path"] = str(local_image_path)
+    data["image_file_size"] = local_image_path.stat().st_size
+    data["image_content_type"] = content_type
+    data["caption"] = caption_payload
+    data["file_upload"] = _file_upload_summary(sent_upload if isinstance(sent_upload, dict) else created_upload)
+    append_results = append_result.get("results") or []
+    data["appended_blocks"] = [
+        {
+            "id": item.get("id", ""),
+            "type": item.get("type", ""),
+            "has_children": bool(item.get("has_children", False)),
+        }
+        for item in append_results
+        if isinstance(item, dict)
+    ]
+    return ok(
+        action="upload_image",
+        path=target_page_id,
+        message="Image uploaded to Notion and appended to the page successfully",
         data=data,
     )
 
@@ -1423,6 +1720,8 @@ def run(
     action: str,
     page_id: str = "",
     page_url: str = "",
+    block_id: str = "",
+    block_url: str = "",
     parent_page_id: str = "",
     parent_page_url: str = "",
     database_id: str = "",
@@ -1436,14 +1735,22 @@ def run(
     title="",
     description="",
     content: str = "",
+    image_path: str = "",
+    local_image_path: str = "",
+    file_path: str = "",
+    caption="",
     properties=None,
     initial_data_source=None,
     query=None,
+    query_text: str = "",
+    search_query: str = "",
     body=None,
     filter=None,
     sorts=None,
     page_size=None,
     start_cursor: str = "",
+    sort_timestamp: str = "",
+    sort_direction: str = "",
     max_depth=None,
     include_markdown=False,
     include_snapshot=False,
@@ -1456,11 +1763,21 @@ def run(
     target: str = "",
     new_text: str = "",
     after: str = "",
+    image_index: int = 1,
+    save_path: str = "",
+    save_dir: str = "",
+    filename: str = "",
+    recursive: bool = True,
     replace_all_matches: bool = False,
     allow_deleting_content: bool = False,
     **kwargs,
 ):
     runtime_config = _load_runtime_config()
+    effective_image_path = (
+        str(image_path or "").strip()
+        or str(local_image_path or "").strip()
+        or str(file_path or "").strip()
+    )
     path_hint = (
         row_page_id
         or row_page_url
@@ -1468,12 +1785,15 @@ def run(
         or data_source_url
         or database_id
         or database_url
+        or block_id
+        or block_url
         or page_id
         or page_url
         or parent_database_id
         or parent_database_url
         or parent_page_id
         or parent_page_url
+        or effective_image_path
     )
 
     try:
@@ -1498,38 +1818,7 @@ def run(
         if str(start_cursor or "").strip():
             query_body["start_cursor"] = str(start_cursor)
 
-        if action == "read_architecture_cache":
-            effective_lookup_id = str(lookup_id or "").strip()
-            effective_lookup_url = str(lookup_url or "").strip()
-            effective_object_type = str(object_type or "").strip()
-
-            if not effective_lookup_id and not effective_lookup_url:
-                if str(row_page_id or row_page_url).strip():
-                    effective_lookup_id = row_page_id
-                    effective_lookup_url = row_page_url
-                    effective_object_type = effective_object_type or "row"
-                elif str(data_source_id or data_source_url).strip():
-                    effective_lookup_id = data_source_id
-                    effective_lookup_url = data_source_url
-                    effective_object_type = effective_object_type or "data_source"
-                elif str(database_id or database_url).strip():
-                    effective_lookup_id = database_id
-                    effective_lookup_url = database_url
-                    effective_object_type = effective_object_type or "database"
-                elif str(page_id or page_url).strip():
-                    effective_lookup_id = page_id
-                    effective_lookup_url = page_url
-                    effective_object_type = effective_object_type or "page"
-
-            return _read_architecture_cache(
-                lookup_id=effective_lookup_id,
-                lookup_url=effective_lookup_url,
-                lookup_title=lookup_title,
-                object_type=effective_object_type,
-                include_snapshot=bool(include_snapshot),
-            )
-
-        if action in {"sync_architecture", "real_all", "read_all"}:
+        if action == "sync_architecture":
             root_page_id = ""
             root_database_id = ""
             root_data_source_id = ""
@@ -1581,6 +1870,19 @@ def run(
             )
             return _read_page(runtime_config, target_page_id=target_page_id)
 
+        if action == "search":
+            effective_query_text = str(search_query or "").strip() or str(query_text or "").strip()
+            return _search(
+                runtime_config,
+                query_text=effective_query_text,
+                object_type=object_type,
+                page_size=page_size,
+                start_cursor=start_cursor,
+                sort_timestamp=sort_timestamp,
+                sort_direction=sort_direction,
+                body=request_body,
+            )
+
         if action == "create_page":
             parent_id = _resolve_page_id(
                 page_id=parent_page_id,
@@ -1629,6 +1931,49 @@ def run(
                     content=content,
                     after=after,
                 )
+            )
+
+        if action == "upload_image":
+            target_page_id = _resolve_page_id(
+                page_id=page_id,
+                page_url=page_url,
+                require_explicit=True,
+                label="page",
+            )
+            return _mark_result_architecture_stale(
+                _upload_image(
+                    runtime_config,
+                    target_page_id=target_page_id,
+                    image_path=effective_image_path,
+                    caption=caption,
+                    after=after,
+                )
+            )
+
+        if action == "download_image":
+            target_block_id = ""
+            if str(block_id or block_url).strip():
+                target_block_id = _extract_notion_id(block_id or block_url)
+
+            target_page_id = ""
+            if not target_block_id:
+                target_page_id = _resolve_page_id(
+                    page_id=page_id,
+                    page_url=page_url,
+                    default_page_id=runtime_config.get("default_parent_page_id", ""),
+                    require_explicit=False,
+                    label="page",
+                )
+
+            return _download_image(
+                runtime_config,
+                target_page_id=target_page_id,
+                target_block_id=target_block_id,
+                image_index=image_index,
+                save_path=save_path,
+                save_dir=save_dir,
+                filename=filename,
+                recursive=bool(recursive),
             )
 
         if action == "replace_text":

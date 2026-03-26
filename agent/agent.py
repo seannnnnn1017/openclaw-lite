@@ -1,6 +1,9 @@
+import base64
 import json
+import mimetypes
 import re
 import threading
+from pathlib import Path
 
 from lmstudio_client import LMStudioClient
 from schemas import Message, ChatRequest
@@ -17,7 +20,7 @@ class SimpleAgent:
         self.history_lock = threading.Lock()
         self.run_lock = threading.RLock()
         self.skill_client = SkillClient(base_url=config.skill_server_url)
-        self.max_tool_steps = 6
+        self.max_tool_steps = 20
 
     def _extract_think_blocks(self, text: str):
         if not text:
@@ -111,7 +114,7 @@ class SimpleAgent:
     def _print_tool_result(self, step: int, skill_result: dict):
         self.display.tool_result(step, self._summarize_tool_result(skill_result))
 
-    def _append_history(self, user_input: str, response: str):
+    def _append_history(self, user_input, response: str):
         with self.history_lock:
             self.history.append(Message(role="user", content=user_input))
             self.history.append(Message(role="assistant", content=response))
@@ -150,16 +153,17 @@ class SimpleAgent:
         )
         self.skill_client = SkillClient(base_url=self.config.skill_server_url)
 
-    def _chat(self, messages) -> str:
+    def _chat(self, messages, *, response_stream_callback=None) -> str:
         request = ChatRequest(
             model=self.config.model,
             messages=messages,
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
+            stream=getattr(self.config, "stream", False),
         )
-        return self.client.chat(request)
+        return self.client.chat(request, on_content_stream=response_stream_callback)
 
-    def _build_base_messages(self, user_input: str):
+    def _build_base_messages(self, user_input):
         with self.history_lock:
             history_snapshot = list(self.history)
         return [
@@ -243,17 +247,69 @@ class SimpleAgent:
 
     def _build_tool_result_message(self, skill_result: dict):
         result_json = json.dumps(skill_result, ensure_ascii=False)
+        message_text = (
+            "The skill server executed your JSON instruction.\n"
+            f"Skill result JSON:\n{result_json}\n\n"
+            "If more tool use is required, return exactly one JSON object."
+            " Otherwise, answer the original user request."
+        )
+        image_parts = self._build_tool_result_image_parts(skill_result)
+        if not image_parts:
+            return Message(role="user", content=message_text)
+        message_text += "\n\nA local image from the skill result is attached below."
         return Message(
             role="user",
-            content=(
-                "The skill server executed your JSON instruction.\n"
-                f"Skill result JSON:\n{result_json}\n\n"
-                "If more tool use is required, return exactly one JSON object."
-                " Otherwise, answer the original user request."
-            ),
+            content=[{"type": "text", "text": message_text}, *image_parts],
         )
 
-    def run(self, user_input: str) -> str:
+    def _image_file_to_data_url(self, image_path: str) -> str:
+        resolved_path = Path(image_path).expanduser().resolve()
+        if not resolved_path.is_file():
+            raise FileNotFoundError(f"Image not found: {resolved_path}")
+
+        mime_type, _ = mimetypes.guess_type(str(resolved_path))
+        if not mime_type:
+            mime_type = "application/octet-stream"
+
+        encoded = base64.b64encode(resolved_path.read_bytes()).decode("utf-8")
+        return f"data:{mime_type};base64,{encoded}"
+
+    def _build_tool_result_image_parts(self, skill_result: dict):
+        if not isinstance(skill_result, dict):
+            return []
+        if skill_result.get("skill") != "file-control":
+            return []
+        if skill_result.get("action") != "read":
+            return []
+
+        result = skill_result.get("result", {})
+        if not isinstance(result, dict):
+            return []
+        data = result.get("data", {})
+        if not isinstance(data, dict):
+            return []
+        if str(data.get("read_kind", "")).strip() != "image":
+            return []
+
+        local_path = str(data.get("local_path", "")).strip()
+        if not local_path:
+            return []
+
+        try:
+            data_url = self._image_file_to_data_url(local_path)
+        except Exception:
+            return []
+
+        return [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": data_url,
+                },
+            }
+        ]
+
+    def run(self, user_input, *, history_user_input=None, response_stream_callback=None) -> str:
         with self.run_lock:
             if hasattr(self.config, "reload_if_changed"):
                 reloaded = bool(self.config.reload_if_changed())
@@ -261,12 +317,16 @@ class SimpleAgent:
                     self.refresh_runtime_clients()
                     self.display.system("Config, prompts, or skills changed. Runtime reloaded.")
 
+            persisted_user_input = user_input if history_user_input is None else history_user_input
             messages = self._build_base_messages(user_input)
             last_response = ""
 
             for step in range(self.max_tool_steps + 1):
                 try:
-                    response = self._chat(messages)
+                    response = self._chat(
+                        messages,
+                        response_stream_callback=response_stream_callback,
+                    )
                 except Exception as e:
                     return f"[ERROR] {e}"
 
@@ -282,12 +342,12 @@ class SimpleAgent:
                 last_response = visible_response
                 skill_call = self._parse_skill_call(cleaned_response or response)
                 if not skill_call:
-                    self._append_history(user_input, visible_response)
+                    self._append_history(persisted_user_input, visible_response)
                     return visible_response
 
                 if step >= self.max_tool_steps:
                     max_step_error = "[ERROR] Reached maximum tool steps before final answer"
-                    self._append_history(user_input, max_step_error)
+                    self._append_history(persisted_user_input, max_step_error)
                     return max_step_error
 
                 if skill_call.get("message"):
@@ -312,5 +372,5 @@ class SimpleAgent:
                 self._print_tool_result(step + 1, skill_result)
                 messages.append(self._build_tool_result_message(skill_result))
 
-            self._append_history(user_input, last_response)
+            self._append_history(persisted_user_input, last_response)
             return last_response

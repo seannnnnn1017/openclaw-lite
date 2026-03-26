@@ -199,6 +199,7 @@ class Config:
         self.model = self._model_override or self.default_model
         self.temperature = data["llm"]["temperature"]
         self.max_tokens = data["llm"]["max_tokens"]
+        self.stream = bool(data["llm"].get("stream", False))
         self.skill_server_url = data.get("skill_server", {}).get("base_url", "http://127.0.0.1:8001")
 
         telegram = data.get("telegram", {})
@@ -222,6 +223,12 @@ class Config:
             str((self.base_dir / telegram_state_path).resolve())
             if telegram_state_path
             else str((self.base_dir / "data" / "system" / "telegram_bridge_state.json").resolve())
+        )
+        telegram_image_storage_path = telegram.get("image_storage_path", "").strip()
+        self.telegram_image_storage_path = (
+            str((self.base_dir / telegram_image_storage_path).resolve())
+            if telegram_image_storage_path
+            else str((self.base_dir / "data" / "telegram_media").resolve())
         )
 
         all_paths = self._collect_tracked_paths()

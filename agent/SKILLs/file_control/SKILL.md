@@ -18,7 +18,7 @@ Base JSON shape:
 {"skill":"file-control","action":"<action>","args":{"path":"<target_path>"}}
 
 Supported actions:
-- `read`: return the full file content
+- `read`: return the full text file content, or read a local image file so it can be attached back to the model
 - `create`: create an empty file if it does not exist
 - `write`: overwrite the full file content
 - `append`: append content to the end of the file
@@ -57,6 +57,7 @@ Occurrence rules:
 
 Behavior guidelines:
 - Prefer `read` before targeted edits if the exact file content is uncertain.
+- `read` supports both text files and local image files. When the target is an image, the tool returns metadata and the agent can inspect the image itself through a multimodal follow-up message.
 - Prefer `replace_text`, `insert_after`, or `insert_before` over full `write` when the user asks for a localized change.
 - Use `write` when the user clearly wants to replace the whole file.
 - Use `append` only when the new content should be added to the end without modifying existing content.
@@ -79,7 +80,8 @@ Path rules:
 
 Result shape:
 - The tool returns a JSON object with `status`, `action`, `path`, `message`, and `data`.
-- Successful `read` returns file content in `data.content`.
+- Successful `read` returns file content in `data.content` for text files.
+- Successful image `read` returns image metadata such as `data.read_kind`, `data.local_path`, `data.mime_type`, and file size fields.
 - Successful mutating actions return `backup_id`, `backup_reason`, and `existed_before`.
 - Successful text-edit actions also return summary information such as match counts.
 - Successful `restore` returns the restored `backup_id` and the original action that was reverted.
@@ -87,6 +89,7 @@ Result shape:
 
 JSON examples:
 - `{"skill":"file-control","action":"read","args":{"path":"worplace/test.py"}}`
+- `{"skill":"file-control","action":"read","args":{"path":"agent/data/telegram_media/2026-03-25/chat_123/photo.png"}}`
 - `{"skill":"file-control","action":"write","args":{"path":"notes/todo.txt","content":"hello world","reason":"Create initial todo file"}}`
 - `{"skill":"file-control","action":"replace_text","args":{"path":"notes/todo.txt","target":"old","new_text":"new","reason":"Rename label for clarity"}}`
 - `{"skill":"file-control","action":"replace_text","args":{"path":"notes/todo.txt","target":"old","new_text":"new","occurrence":0,"reason":"Normalize all labels"}}`

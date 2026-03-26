@@ -2,4 +2,6 @@ __pycache__/
 *.pyc
 agent/data/system/secrets.local.json
 agent/data/system/notion_skill_config.local.json
+agent/data/telegram_media/
+agent/data/notion_downloads/
 agent/SKILLs/notion_basic/scripts/temporary_data/
