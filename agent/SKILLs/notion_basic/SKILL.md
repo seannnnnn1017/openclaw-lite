@@ -54,6 +54,7 @@ Target rules:
 - `create_page` and `create_database` may omit the parent target and fall back to the same configured default parent page from `agent/data/system/secrets.local.json`.
 - `query_database` and `create_row` may accept `database_id` instead of `data_source_id`, but automatic resolution only works when the database has a single data source.
 - `sync_architecture` may target a page, database, or data source. If no target is given, it falls back to the same default page from `agent/data/system/secrets.local.json`.
+- If the user gives a Notion database URL that includes a view query string such as `?v=...`, pass the full URL directly; the tool will use the database ID from the path instead of the view ID.
 
 Core arguments:
 - `query_text` or `search_query`: keyword text for the official Notion `search` action; prefer these over `query` for title search
@@ -76,6 +77,19 @@ Core arguments:
 - `max_depth`: maximum nested page depth to traverse for `sync_architecture`; defaults to `3` and cannot exceed `3`
 - `include_markdown`: when true, `sync_architecture` includes page markdown in the stored snapshot; defaults to `false`
 
+Date property patterns for database rows:
+- For `create_row` and `update_row`, a Notion date property must be passed inside `properties` using the raw page-property shape: `"<DatePropertyName>":{"date":{"start":"...","end":"...","time_zone":"..."}}`
+- Date-only value: `{"Date":{"date":{"start":"2026-03-26"}}}`
+- Date range without time: `{"Date":{"date":{"start":"2026-03-26","end":"2026-03-28"}}}`
+- Datetime with minute precision: `{"Date":{"date":{"start":"2026-03-26T14:30:00+08:00"}}}`
+- Datetime range with minute precision: `{"Date":{"date":{"start":"2026-03-26T14:30:00+08:00","end":"2026-03-26T15:45:00+08:00"}}}`
+- If you provide `time_zone`, then `start` and `end` must include a time but must not include a UTC offset. Example: `{"Date":{"date":{"start":"2026-03-26T14:30:00","end":"2026-03-26T15:45:00","time_zone":"Asia/Taipei"}}}`
+- The tool also accepts a simplified date object and normalizes it automatically. Example: `{"Date":{"start":"2026-03-26T14:30:00+08:00","end":"2026-03-26T15:45:00+08:00"}}`
+- The tool also accepts a date array `[start, end]` and treats it as a date range. Example: `{"Date":["2026-03-26T14:30:00+08:00","2026-03-26T15:45:00+08:00"]}`
+- The tool also accepts a single date string and treats it as `date.start`. Example: `{"Date":"2026-03-26T14:30:00+08:00"}`
+- `end` is optional. When omitted or `null`, the property is a single date or single datetime instead of a range.
+- Use the exact Notion property name from the target data source schema, for example `Date`, `Due`, or `Start time`.
+
 Behavior guidelines:
 - `search` uses the official Notion search API. It can search shared pages and data sources by title metadata, but it is not full-text page-content search and it cannot directly search attachment contents.
 - Treat `content` as Notion-flavored markdown.
@@ -90,6 +104,14 @@ Behavior guidelines:
 - Only set `allow_deleting_content: true` when the user explicitly wants destructive content replacement.
 - `query_database` is a convenience alias over `query_data_source`; if a database has multiple data sources, provide `data_source_id` explicitly.
 - `create_row` and `update_row` accept raw Notion property payloads. Use `title` only as a convenience shortcut for the title property.
+- For date properties in `create_row` and `update_row`, preserve the raw Notion `date.start`, optional `date.end`, and optional `date.time_zone` structure inside `properties`; do not flatten them into custom fields.
+- `create_row` and `update_row` also normalize common shorthand forms based on the live property schema. Useful shortcuts:
+- Date: string, `[start, end]`, or `{start, end, time_zone}`
+- Select and status: plain string values such as `"未完成"` or `"Done"`
+- Multi-select: arrays of strings such as `["AI 模型","工具使用"]`
+- Rich text: plain strings
+- Checkbox: booleans
+- Number: numeric values
 - When the user does not provide `page_id` or `page_url`, do not ask for one first if the configured default page in `agent/data/system/secrets.local.json` is sufficient for the task.
 - When the user asks where a Notion page, database, data source, or row is located, use `sync_architecture` directly against the relevant root target instead of relying on a local cache.
 - `sync_architecture` is live and stateless. It does not read or write a local architecture cache file.
@@ -125,4 +147,8 @@ JSON examples:
 - `{"skill":"notion-basic","action":"create_data_source","args":{"database_id":"32e5aafd-db3b-807a-b2e5-c4c05c04b172","title":"Bugs","properties":{"Name":{"title":{}},"Severity":{"select":{"options":[{"name":"High","color":"red"},{"name":"Low","color":"yellow"}]}}}}}`
 - `{"skill":"notion-basic","action":"update_data_source","args":{"data_source_id":"32e5aafd-db3b-807a-b2e5-c4c05c04b172","description":"Main task schema","properties":{"Priority":{"select":{"options":[{"name":"P0","color":"red"},{"name":"P1","color":"orange"},{"name":"P2","color":"yellow"}]}}}}}`
 - `{"skill":"notion-basic","action":"create_row","args":{"data_source_id":"32e5aafd-db3b-807a-b2e5-c4c05c04b172","title":"Fix Telegram reconnect","properties":{"Status":{"select":{"name":"Doing"}},"Owner":{"people":[]}}}}`
+- `{"skill":"notion-basic","action":"create_row","args":{"data_source_id":"32e5aafd-db3b-807a-b2e5-c4c05c04b172","title":"Client call","properties":{"Date":{"date":{"start":"2026-03-26T14:30:00+08:00","end":"2026-03-26T15:00:00+08:00"}}}}}`
+- `{"skill":"notion-basic","action":"create_row","args":{"data_source_id":"32e5aafd-db3b-807a-b2e5-c4c05c04b172","title":"Client call","properties":{"Date":{"start":"2026-03-26T14:30:00+08:00","end":"2026-03-26T15:00:00+08:00"},"Status":"Doing"}}}`
+- `{"skill":"notion-basic","action":"update_row","args":{"row_page_id":"32e5aafd-db3b-80a5-a0eb-c5d49ec41b5f","properties":{"Date":{"date":{"start":"2026-03-26T14:30:00","end":"2026-03-26T15:45:00","time_zone":"Asia/Taipei"}}}}}`
+- `{"skill":"notion-basic","action":"update_row","args":{"row_page_id":"32e5aafd-db3b-80a5-a0eb-c5d49ec41b5f","properties":{"Date":["2026-03-26T14:30:00+08:00","2026-03-26T15:45:00+08:00"]}}}`
 - `{"skill":"notion-basic","action":"update_row","args":{"row_page_id":"32e5aafd-db3b-80a5-a0eb-c5d49ec41b5f","properties":{"Status":{"select":{"name":"Done"}}}}}`

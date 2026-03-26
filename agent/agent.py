@@ -1,3 +1,4 @@
+import ast
 import base64
 import json
 import mimetypes
@@ -9,6 +10,11 @@ from lmstudio_client import LMStudioClient
 from schemas import Message, ChatRequest
 from skill_client import SkillClient
 from terminal_display import TerminalDisplay
+
+try:
+    from core.token_estimator import summarize_prompt_and_history
+except ModuleNotFoundError:
+    from agent.core.token_estimator import summarize_prompt_and_history
 
 
 class SimpleAgent:
@@ -137,6 +143,14 @@ class SimpleAgent:
         with self.history_lock:
             return len(self.history)
 
+    def token_estimate_summary(self) -> dict:
+        with self.history_lock:
+            history_snapshot = list(self.history)
+        return summarize_prompt_and_history(
+            self.config.agent_layers.build_system_prompt(),
+            history_snapshot,
+        )
+
     def set_show_think(self, enabled: bool):
         self.display.set_enabled("think", enabled)
 
@@ -207,6 +221,106 @@ class SimpleAgent:
 
         return normalized
 
+    def _try_parse_structured_payload(self, candidate: str):
+        cleaned = str(candidate or "").strip()
+        if not cleaned:
+            return None
+
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            return payload
+
+        try:
+            payload = ast.literal_eval(cleaned)
+        except (ValueError, SyntaxError):
+            payload = None
+        if isinstance(payload, dict):
+            return payload
+
+        return None
+
+    def _find_matching_brace(self, text: str, start_index: int) -> int | None:
+        depth = 0
+        in_string = None
+        escape = False
+
+        for index in range(start_index, len(text)):
+            char = text[index]
+            if in_string is not None:
+                if escape:
+                    escape = False
+                    continue
+                if char == "\\":
+                    escape = True
+                    continue
+                if char == in_string:
+                    in_string = None
+                continue
+
+            if char in {'"', "'"}:
+                in_string = char
+                continue
+
+            if char == "{":
+                depth += 1
+                continue
+
+            if char == "}":
+                depth -= 1
+                if depth == 0:
+                    return index + 1
+
+        return None
+
+    def _iter_embedded_skill_payload_candidates(self, text: str):
+        pattern = re.compile(r"\{\s*['\"]?skill['\"]?\s*:")
+        for match in pattern.finditer(str(text or "")):
+            start = match.start()
+            end = self._find_matching_brace(text, start)
+            if end is None:
+                continue
+
+            payload_text = text[start:end].strip()
+            prefix = text[:start].strip()
+            suffix = text[end:].strip()
+            speech_parts = [part for part in [prefix, suffix] if part]
+            yield payload_text, "\n".join(speech_parts)
+
+    def _looks_like_tool_payload(self, text: str) -> bool:
+        stripped = str(text or "").lstrip()
+        if not stripped:
+            return False
+
+        head = stripped[:1000]
+        if stripped.startswith("{") and "skill" in head and "action" in head:
+            return True
+
+        if stripped.startswith("```"):
+            fence_body = stripped[3:].lstrip()
+            if "skill" in fence_body[:1000] and "action" in fence_body[:1000]:
+                return True
+
+        return bool(
+            re.search(r"\{\s*['\"]?skill['\"]?\s*:", head)
+            and ("action" in head or "args" in head)
+        )
+
+    def _build_skill_format_repair_message(self, invalid_response: str) -> str:
+        return (
+            "Your previous reply looks like an attempted skill call, but it was not a valid executable JSON object.\n"
+            "Return exactly one valid JSON object and nothing else.\n"
+            'Required schema: {"skill":"<skill-name>","action":"<action-name>","args":{...}}\n'
+            "Rules:\n"
+            "- Use double quotes for every key and string value.\n"
+            "- `args` must be a JSON object.\n"
+            "- Do not wrap the JSON in markdown fences.\n"
+            "- Do not include explanations before or after the JSON.\n"
+            f"Previous reply:\n{invalid_response}"
+        )
+
     def _parse_skill_call(self, text: str):
         if not text:
             return None
@@ -216,29 +330,15 @@ class SimpleAgent:
             lines = candidate.splitlines()
             candidate = "\n".join(lines[1:-1]).strip()
 
-        try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError:
-            payload = None
-
+        payload = self._try_parse_structured_payload(candidate)
         skill_call = self._normalize_skill_call(payload)
         if skill_call:
             return skill_call
 
-        # Recover embedded tool JSON from replies that include reasoning text.
-        decoder = json.JSONDecoder()
-        matches = list(re.finditer(r'\{\s*"skill"\s*:', candidate))
-        for match in reversed(matches):
-            try:
-                payload, end = decoder.raw_decode(candidate[match.start():])
-            except json.JSONDecodeError:
-                continue
-
-            prefix = candidate[:match.start()].strip()
-            suffix = candidate[match.start() + end:].strip()
-            speech_parts = [part for part in [prefix, suffix] if part]
-            speech_text = "\n".join(speech_parts)
-
+        for payload_text, speech_text in reversed(
+            list(self._iter_embedded_skill_payload_candidates(candidate))
+        ):
+            payload = self._try_parse_structured_payload(payload_text)
             skill_call = self._normalize_skill_call(payload, speech_text=speech_text)
             if skill_call:
                 return skill_call
@@ -342,6 +442,26 @@ class SimpleAgent:
                 last_response = visible_response
                 skill_call = self._parse_skill_call(cleaned_response or response)
                 if not skill_call:
+                    if self._looks_like_tool_payload(cleaned_response or response):
+                        if step >= self.max_tool_steps:
+                            max_step_error = "[ERROR] Reached maximum tool steps while repairing malformed tool JSON"
+                            self._append_history(persisted_user_input, max_step_error)
+                            return max_step_error
+
+                        self.display.tool_note(
+                            step + 1,
+                            "Detected malformed tool JSON. Requesting a corrected tool instruction.",
+                        )
+                        malformed_response = cleaned_response or response
+                        messages.append(Message(role="assistant", content=malformed_response))
+                        messages.append(
+                            Message(
+                                role="user",
+                                content=self._build_skill_format_repair_message(malformed_response),
+                            )
+                        )
+                        continue
+
                     self._append_history(persisted_user_input, visible_response)
                     return visible_response
 

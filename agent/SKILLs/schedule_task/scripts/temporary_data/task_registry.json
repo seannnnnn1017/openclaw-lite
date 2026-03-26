@@ -1,5 +1,5 @@
 {
-  "next_id": 11,
+  "next_id": 12,
   "tasks": [
     {
       "id": "TASK-000001",
@@ -357,6 +357,41 @@
       "last_run_at": "2026-03-26T10:02:05+08:00",
       "created_at": "2026-03-26T10:00:10+08:00",
       "updated_at": "2026-03-26T10:02:20+08:00",
+      "timeout_seconds": null
+    },
+    {
+      "id": "TASK-000011",
+      "task_name": "1-minute-alarm",
+      "name": "1-minute-alarm",
+      "short_name": "1-minute-alarm",
+      "task_prompt": "每分鐘執行一次提醒，並回報當前時間與任務狀態",
+      "task": "",
+      "prompt": "",
+      "command": "",
+      "arguments": "",
+      "task_run": "",
+      "schedule_type": "minute",
+      "start_date": "2026-03-26",
+      "start_time": "00:00",
+      "modifier": 1,
+      "days_of_week": [],
+      "enabled": false,
+      "completed": false,
+      "deleted": true,
+      "deleted_at": "2026-03-26T15:09:22+08:00",
+      "next_run_at": "",
+      "pending_now": false,
+      "pending_requested_at": "",
+      "reason": "Removed via Telegram inline action by op23756778",
+      "last_status": "ok",
+      "last_response": "提醒已執行：當前時間 2026-03-26T15:09:00+08:00，任務「1-minute-alarm」持續運行中，系統將繼續每分鐘自動回報狀態。如需停止或調整，請隨時告知。",
+      "last_error": "",
+      "last_trigger": "delete",
+      "last_scheduled_for": "2026-03-26T15:09:00+08:00",
+      "last_dispatch_at": "2026-03-26T15:09:00+08:00",
+      "last_run_at": "2026-03-26T15:09:07+08:00",
+      "created_at": "2026-03-26T15:06:47+08:00",
+      "updated_at": "2026-03-26T15:09:22+08:00",
       "timeout_seconds": null
     }
   ]

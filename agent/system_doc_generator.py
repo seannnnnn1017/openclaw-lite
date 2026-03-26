@@ -17,12 +17,16 @@ CLI_COMMANDS = [
     "/task remove -all: remove all scheduled tasks without using the LLM",
     "/think [on|off]: show or toggle `[THINK]` output for the current session",
     "/reload: reload config, prompts, skills, runtime clients, and regenerate this file",
-    "/status: show model, history size, display categories, and endpoint URLs",
+    "/status: show model, history size, estimated prompt/history tokens, display categories, and endpoint URLs",
 ]
 
 CORE_COMPONENTS = [
-    "agent/main.py: terminal entrypoint, command handling, Telegram routing, scheduler integration",
-    "agent/agent.py: `SimpleAgent` reasoning loop, tool JSON parsing, per-session history",
+    "agent/main.py: thin terminal entrypoint that boots `AgentApplication`",
+    "agent/app/application.py: runtime coordinator for terminal I/O, scheduler dispatch, reload flow, and Telegram integration",
+    "agent/app/cli.py: slash-command parsing plus direct cache/model/task/status operations",
+    "agent/app/tasks.py: scheduled-task lookup, formatting, inline-action markup, and edit application",
+    "agent/app/telegram_runtime.py + agent/app/telegram_support.py: Telegram session routing, tool-progress relays, rolling replies, and image prompt assembly",
+    "agent/agent.py + agent/core/token_estimator.py: `SimpleAgent` reasoning loop, tool JSON parsing, per-session history, and token estimation",
     "agent/config_loader.py: loads config, prompts, enabled skills, and runtime model overrides",
     "agent/skill_server.py + agent/skill_runtime.py: skill request dispatch and tool loading",
     "agent/schedule_runtime.py + agent/chat_scheduler.py: schedule registry, due-task polling, result recording",
@@ -212,9 +216,9 @@ def generate_system_architecture(config) -> Path:
 
     session_model_lines = [
         "Terminal uses one shared `SimpleAgent` instance.",
-        "Telegram keeps one `SimpleAgent` per `chat_id` in `telegram_agents`.",
+        "Telegram keeps one `SimpleAgent` per `chat_id` inside `TelegramRuntime`.",
         "History is in-memory and separated by session.",
-        "Tool loop limit: `SimpleAgent.max_tool_steps = 6`.",
+        "Tool loop limit: `SimpleAgent.max_tool_steps = 20`.",
     ]
 
     prompt_lines = [

@@ -111,11 +111,43 @@ Tool JSON:
 ```
 
 User request:
+"Create a calendar row for a client call from 2026-03-26 14:30 to 15:00 Taipei time"
+
+Tool JSON:
+```json
+{"skill":"notion-basic","action":"create_row","args":{"data_source_id":"32e5aafd-db3b-807a-b2e5-c4c05c04b172","title":"Client call","properties":{"Date":{"date":{"start":"2026-03-26T14:30:00+08:00","end":"2026-03-26T15:00:00+08:00"}}}}}
+```
+
+User request:
+"Create a calendar row using the simpler date shorthand"
+
+Tool JSON:
+```json
+{"skill":"notion-basic","action":"create_row","args":{"data_source_id":"32e5aafd-db3b-807a-b2e5-c4c05c04b172","title":"Client call","properties":{"Date":{"start":"2026-03-26T14:30:00+08:00","end":"2026-03-26T15:00:00+08:00"},"Status":"Doing"}}}
+```
+
+User request:
 "Mark this row as Done"
 
 Tool JSON:
 ```json
 {"skill":"notion-basic","action":"update_row","args":{"row_page_id":"32e5aafd-db3b-80a5-a0eb-c5d49ec41b5f","properties":{"Status":{"select":{"name":"Done"}}}}}
+```
+
+User request:
+"Update this row's Date field to a single start time at 2026-03-26 16:45 in Asia/Taipei"
+
+Tool JSON:
+```json
+{"skill":"notion-basic","action":"update_row","args":{"row_page_id":"32e5aafd-db3b-80a5-a0eb-c5d49ec41b5f","properties":{"Date":{"date":{"start":"2026-03-26T16:45:00","time_zone":"Asia/Taipei"}}}}}
+```
+
+User request:
+"Update this row's Date field using a date array shorthand"
+
+Tool JSON:
+```json
+{"skill":"notion-basic","action":"update_row","args":{"row_page_id":"32e5aafd-db3b-80a5-a0eb-c5d49ec41b5f","properties":{"Date":["2026-03-26T16:45:00+08:00","2026-03-26T18:00:00+08:00"]}}}
 ```
 
 User request:

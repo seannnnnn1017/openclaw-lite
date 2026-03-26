@@ -46,6 +46,22 @@ KNOWN_IMAGE_MIME_TYPES = {
     ".webp": "image/webp",
 }
 FILENAME_SAFE_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
+NOTION_PROPERTY_VALUE_TYPES = {
+    "title",
+    "rich_text",
+    "number",
+    "select",
+    "multi_select",
+    "status",
+    "date",
+    "people",
+    "files",
+    "checkbox",
+    "url",
+    "email",
+    "phone_number",
+    "relation",
+}
 
 
 def ok(action: str, path: str, data=None, message: str = ""):
@@ -90,6 +106,11 @@ def _extract_notion_id(raw_value: str) -> str:
     text = str(raw_value or "").strip()
     if not text:
         return ""
+
+    parsed_url = parse.urlparse(text)
+    path_matches = UUID_PATTERN.findall(parsed_url.path or "")
+    if path_matches:
+        return _normalize_uuid(path_matches[-1])
 
     matches = UUID_PATTERN.findall(text)
     if not matches:
@@ -451,6 +472,178 @@ def _to_rich_text_array(value, field_name: str) -> list:
             }
         ]
     raise ValueError(f"{field_name} must be a string, object, or array")
+
+
+def _looks_like_property_payload(value, expected_type: str = "") -> bool:
+    if not isinstance(value, dict):
+        return False
+    if expected_type and expected_type in value:
+        return True
+    return any(key in NOTION_PROPERTY_VALUE_TYPES for key in value.keys())
+
+
+def _normalize_date_property_value(value):
+    if value is None:
+        return {"date": None}
+
+    if isinstance(value, str):
+        cleaned = str(value).strip()
+        if not cleaned:
+            return {"date": None}
+        return {"date": {"start": cleaned}}
+
+    if isinstance(value, (list, tuple)):
+        items = [str(item).strip() for item in value if str(item).strip()]
+        if not items:
+            return {"date": None}
+        if len(items) == 1:
+            return {"date": {"start": items[0]}}
+        if len(items) == 2:
+            return {"date": {"start": items[0], "end": items[1]}}
+        raise ValueError("date property arrays must contain at most two values: start and optional end")
+
+    if not isinstance(value, dict):
+        raise ValueError("date properties must be a string, object, array, or null")
+
+    if "date" in value:
+        date_payload = value.get("date")
+        if date_payload is None:
+            return {"date": None}
+        if not isinstance(date_payload, dict):
+            raise ValueError("date.date must be an object or null")
+        return {"date": dict(date_payload)}
+
+    aliases = {
+        "start": "start",
+        "end": "end",
+        "time_zone": "time_zone",
+        "timezone": "time_zone",
+        "tz": "time_zone",
+        "from": "start",
+        "to": "end",
+        "value": "start",
+    }
+    date_payload = {}
+    for raw_key, normalized_key in aliases.items():
+        raw_value = value.get(raw_key)
+        if raw_value not in (None, ""):
+            date_payload[normalized_key] = str(raw_value).strip()
+
+    if not date_payload:
+        raise ValueError(
+            "date property objects must use `date`, `start`/`end`, `from`/`to`, or `time_zone` keys"
+        )
+
+    return {"date": date_payload}
+
+
+def _normalize_property_value_by_type(value, *, property_name: str, property_type: str):
+    if _looks_like_property_payload(value, property_type):
+        return value
+
+    if property_type == "title":
+        if isinstance(value, str):
+            return _build_title_property(value)
+        raise ValueError(f"title property `{property_name}` must be a string or a raw title payload")
+
+    if property_type == "rich_text":
+        if isinstance(value, str):
+            return {"rich_text": _to_rich_text_array(value, property_name)}
+        raise ValueError(
+            f"rich_text property `{property_name}` must be a string or a raw rich_text payload"
+        )
+
+    if property_type == "date":
+        return _normalize_date_property_value(value)
+
+    if property_type == "select":
+        if isinstance(value, str):
+            return {"select": {"name": value}}
+        if isinstance(value, dict) and "name" in value:
+            return {"select": dict(value)}
+        raise ValueError(f"select property `{property_name}` must be a string or a select payload")
+
+    if property_type == "status":
+        if isinstance(value, str):
+            return {"status": {"name": value}}
+        if isinstance(value, dict) and "name" in value:
+            return {"status": dict(value)}
+        raise ValueError(f"status property `{property_name}` must be a string or a status payload")
+
+    if property_type == "multi_select":
+        if isinstance(value, str):
+            cleaned = str(value).strip()
+            return {"multi_select": [{"name": cleaned}]} if cleaned else {"multi_select": []}
+        if isinstance(value, (list, tuple)):
+            items = []
+            for item in value:
+                if isinstance(item, str):
+                    cleaned = str(item).strip()
+                    if cleaned:
+                        items.append({"name": cleaned})
+                elif isinstance(item, dict):
+                    items.append(dict(item))
+                else:
+                    raise ValueError(
+                        f"multi_select property `{property_name}` items must be strings or objects"
+                    )
+            return {"multi_select": items}
+        raise ValueError(
+            f"multi_select property `{property_name}` must be a string, array, or a raw multi_select payload"
+        )
+
+    if property_type == "checkbox":
+        if isinstance(value, bool):
+            return {"checkbox": value}
+        raise ValueError(f"checkbox property `{property_name}` must be true/false or a raw checkbox payload")
+
+    if property_type == "number":
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return {"number": value}
+        raise ValueError(f"number property `{property_name}` must be numeric or a raw number payload")
+
+    if property_type in {"url", "email", "phone_number"}:
+        if isinstance(value, str):
+            return {property_type: value}
+        raise ValueError(f"{property_type} property `{property_name}` must be a string or a raw payload")
+
+    return value
+
+
+def _normalize_properties_for_schema(properties: dict, *, schema_properties: dict) -> dict:
+    if not properties:
+        return {}
+
+    normalized = {}
+    schema_by_name = {}
+    schema_by_id = {}
+    for property_name, property_value in (schema_properties or {}).items():
+        if not isinstance(property_value, dict):
+            continue
+        schema_by_name[str(property_name)] = property_value
+        property_id = str(property_value.get("id", "")).strip()
+        if property_id:
+            schema_by_id[property_id] = property_value
+
+    available_names = sorted(schema_by_name.keys())
+
+    for raw_key, raw_value in properties.items():
+        property_key = str(raw_key)
+        schema_property = schema_by_name.get(property_key) or schema_by_id.get(property_key)
+        if not schema_property:
+            raise ValueError(
+                f"Unknown property `{property_key}`. Available properties: {', '.join(available_names)}"
+            )
+
+        property_type = str(schema_property.get("type", "")).strip()
+        property_name = str(schema_property.get("name", property_key)).strip() or property_key
+        normalized[property_key] = _normalize_property_value_by_type(
+            raw_value,
+            property_name=property_name,
+            property_type=property_type,
+        )
+
+    return normalized
 
 
 def _property_type_map(properties: dict) -> dict:
@@ -1644,6 +1837,7 @@ def _create_row(
 ) -> dict:
     request_body = dict(body or {})
     effective_data_source_id = str(target_data_source_id or "").strip()
+    data_source_obj = {}
     if target_data_source_id:
         request_body["parent"] = {"data_source_id": target_data_source_id}
     elif not isinstance(request_body.get("parent"), dict):
@@ -1654,10 +1848,22 @@ def _create_row(
             effective_data_source_id = _extract_notion_id(raw_parent_data_source_id)
 
     merged_properties = dict(properties or {})
+    if effective_data_source_id and (merged_properties or str(title or "").strip()):
+        data_source_obj = _request_json(runtime_config, method="GET", path=f"/data_sources/{effective_data_source_id}")
+
+    if merged_properties:
+        if not data_source_obj:
+            raise ValueError("create_row property normalization requires a data_source_id")
+        merged_properties = _normalize_properties_for_schema(
+            merged_properties,
+            schema_properties=data_source_obj.get("properties") or {},
+        )
+
     if str(title or "").strip():
         if not effective_data_source_id:
             raise ValueError("create_row title injection requires a data_source_id")
-        data_source_obj = _request_json(runtime_config, method="GET", path=f"/data_sources/{effective_data_source_id}")
+        if not data_source_obj:
+            data_source_obj = _request_json(runtime_config, method="GET", path=f"/data_sources/{effective_data_source_id}")
         title_property_name = _find_title_property_name(data_source_obj)
         merged_properties = _merge_row_title(merged_properties, title_property_name, title)
 
@@ -1689,9 +1895,18 @@ def _update_row(
 ) -> dict:
     request_body = dict(body or {})
     merged_properties = dict(properties or {})
+    existing_page = {}
+
+    if merged_properties or str(title or "").strip():
+        existing_page = _request_json(runtime_config, method="GET", path=f"/pages/{target_row_page_id}")
+
+    if merged_properties:
+        merged_properties = _normalize_properties_for_schema(
+            merged_properties,
+            schema_properties=existing_page.get("properties") or {},
+        )
 
     if str(title or "").strip():
-        existing_page = _request_json(runtime_config, method="GET", path=f"/pages/{target_row_page_id}")
         title_property_name = _find_title_property_name(existing_page)
         merged_properties = _merge_row_title(merged_properties, title_property_name, title)
 
