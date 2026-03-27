@@ -1,7 +1,8 @@
 import json
-import re
 from datetime import datetime
 from pathlib import Path
+
+from skill_manifest import extract_supported_actions
 
 
 CLI_COMMANDS = [
@@ -26,7 +27,7 @@ CORE_COMPONENTS = [
     "agent/app/cli.py: slash-command parsing plus direct cache/model/task/status operations",
     "agent/app/tasks.py: scheduled-task lookup, formatting, inline-action markup, and edit application",
     "agent/app/telegram_runtime.py + agent/app/telegram_support.py: Telegram session routing, tool-progress relays, rolling replies, and image prompt assembly",
-    "agent/agent.py + agent/core/token_estimator.py: `SimpleAgent` reasoning loop, tool JSON parsing, per-session history, and token estimation",
+    "agent/agent.py + agent/delegated_skill_executor.py + agent/core/token_estimator.py: main-agent reasoning loop, delegated single-skill execution, per-session history, and token estimation",
     "agent/config_loader.py: loads config, prompts, enabled skills, and runtime model overrides",
     "agent/skill_server.py + agent/skill_runtime.py: skill request dispatch and tool loading",
     "agent/schedule_runtime.py + agent/chat_scheduler.py: schedule registry, due-task polling, result recording",
@@ -50,35 +51,6 @@ def _bullet_section(title: str, lines: list[str]) -> str:
 
 def _normalize_whitespace(text: str) -> str:
     return " ".join(str(text or "").split())
-
-
-def _extract_supported_actions(skill_content: str) -> list[str]:
-    lines = skill_content.splitlines()
-    actions = []
-    in_actions = False
-
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not in_actions:
-            if line.lower() == "supported actions:":
-                in_actions = True
-            continue
-
-        if not line:
-            if actions:
-                break
-            continue
-
-        if not line.startswith("- "):
-            if actions:
-                break
-            continue
-
-        match = re.search(r"`([^`]+)`", line)
-        if match:
-            actions.append(match.group(1))
-
-    return actions
 
 
 def _tool_module_file(tool_module: str, project_root: Path) -> Path | None:
@@ -110,8 +82,11 @@ def _skill_specific_notes(skill_name: str) -> list[str]:
         ]
     if skill_name == "schedule-task":
         return [
-            "The scheduler stores timing plus `task_prompt`; it does not run raw shell commands directly.",
+            "The scheduler stores timing plus a sanitized `task_prompt`; it does not run raw shell commands directly.",
+            "`task_prompt` keeps only the work instruction and strips schedule wording like `every five minutes` or `tomorrow at 09:45`.",
             "Due tasks are dispatched back into the main terminal `SimpleAgent` instance, not into a Telegram per-chat session.",
+            "Relative-date schedule creation is preflighted through `time-query.now` so terms like `tomorrow` are anchored to the actual local date.",
+            "Deleted tasks and completed one-time tasks are purged from the registry JSON instead of being retained as historical entries.",
             "When Telegram delivery targets are known, scheduled task output is broadcast to Telegram with inline `編輯` and `刪除` actions, and edits are completed through follow-up chat messages.",
         ]
     if skill_name == "time-query":
@@ -152,7 +127,7 @@ def _skill_block(skill: dict, project_root: Path) -> str:
     tool_file_rel = _relative_path(tool_file, project_root) if tool_file else "(tool file not found)"
     metadata = skill.get("metadata", {})
     description = _normalize_whitespace(metadata.get("description", "")) or "No description provided."
-    actions = _extract_supported_actions(skill.get("content", ""))
+    actions = extract_supported_actions(skill.get("content", ""))
     examples_path = skill_dir / "examples.md"
     skill_md_path = skill_dir / "SKILL.md"
     skill_config_path = skill_dir / "skills_config.json"
@@ -218,6 +193,7 @@ def generate_system_architecture(config) -> Path:
         "Terminal uses one shared `SimpleAgent` instance.",
         "Telegram keeps one `SimpleAgent` per `chat_id` inside `TelegramRuntime`.",
         "History is in-memory and separated by session.",
+        "Delegated skill specialists are short-lived and do not inherit full chat history.",
         "Tool loop limit: `SimpleAgent.max_tool_steps = 20`.",
     ]
 
@@ -225,7 +201,8 @@ def generate_system_architecture(config) -> Path:
         f"Active identity prompt: `{_relative_path(identity_path, project_root)}`",
         f"Active system rules prompt: `{_relative_path(system_rules_path, project_root)}`",
         f"Active boundaries prompt: `{_relative_path(boundaries_path, project_root)}`",
-        "Prompt order: `identity -> system_rules -> boundaries -> enabled SKILL.md bodies`.",
+        "Prompt order: `identity -> system_rules -> boundaries -> compact skill manifests`.",
+        "Full `SKILL.md` bodies are loaded only inside delegated single-skill executor sessions.",
         f"Cross-skill rules and project conventions: `{_relative_path(skill_rule_path, project_root)}`" if skill_rule_path.exists() else "Cross-skill rules file: not present",
     ]
 
@@ -253,7 +230,7 @@ def generate_system_architecture(config) -> Path:
     flow_lines = [
         "Terminal: input -> slash-command handler or `SimpleAgent.run(...)` -> optional tool loop -> terminal output.",
         "Telegram: update -> allowlist check -> per-chat `SimpleAgent` -> live tool messages -> final answer.",
-        "Skills: model emits one JSON tool call -> skill server -> Python tool -> result returned to agent.",
+        "Skills: main agent emits either a direct skill JSON call or `__delegate__` -> delegated specialist (single skill prompt only) -> skill server -> Python tool -> result returned to main agent.",
         "Scheduled tasks: registry -> due-task claim -> main `agent` runs `task_prompt` -> result recorded and optionally pushed to Telegram.",
     ]
 

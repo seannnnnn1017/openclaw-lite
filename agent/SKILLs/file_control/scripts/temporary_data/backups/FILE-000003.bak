@@ -1,0 +1,40 @@
+{
+  "next_id": 4,
+  "tasks": [
+    {
+      "id": "TASK-000003",
+      "task_name": "admin-wake-up-daily",
+      "name": "admin-wake-up-daily",
+      "short_name": "admin-wake-up-daily",
+      "task_prompt": "Remind Admin to wake up at 7:50 AM daily; if no reply is received, remind every minute until response",
+      "task": "",
+      "prompt": "",
+      "command": "",
+      "arguments": "",
+      "task_run": "",
+      "schedule_type": "daily",
+      "start_date": "2026-03-27",
+      "start_time": "07:50",
+      "modifier": 1,
+      "days_of_week": [],
+      "enabled": true,
+      "completed": false,
+      "deleted": false,
+      "deleted_at": "",
+      "next_run_at": "2026-03-27T07:50:00+08:00",
+      "pending_now": false,
+      "pending_requested_at": "",
+      "reason": "Daily morning wake-up reminder for Admin with follow-up if no acknowledgment",
+      "last_status": "",
+      "last_response": "",
+      "last_error": "",
+      "last_trigger": "",
+      "last_scheduled_for": "",
+      "last_dispatch_at": "",
+      "last_run_at": "",
+      "created_at": "2026-03-27T01:40:18+08:00",
+      "updated_at": "2026-03-27T01:40:18+08:00",
+      "timeout_seconds": null
+    }
+  ]
+}

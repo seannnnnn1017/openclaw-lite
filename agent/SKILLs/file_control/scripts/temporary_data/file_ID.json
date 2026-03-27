@@ -1,5 +1,5 @@
 {
-  "next_id": 3,
+  "next_id": 5,
   "records": [
     {
       "id": "FILE-000001",
@@ -22,6 +22,30 @@
       "timestamp": "2026-03-24T14:39:18+08:00",
       "existed_before": true,
       "backup_file": "E:\\重要文件\\openclaw-lite\\agent\\SKILLs\\file_control\\scripts\\temporary_data\\backups\\FILE-000002.bak",
+      "restored": false,
+      "restore_count": 0
+    },
+    {
+      "id": "FILE-000003",
+      "action": "write",
+      "path": "E:\\重要文件\\openclaw-lite\\agent\\SKILLs\\schedule_task\\scripts\\temporary_data\\task_registry.json",
+      "full_path": "E:\\重要文件\\openclaw-lite\\agent\\SKILLs\\schedule_task\\scripts\\temporary_data\\task_registry.json",
+      "reason": "No reason provided",
+      "timestamp": "2026-03-27T01:54:40+08:00",
+      "existed_before": true,
+      "backup_file": "E:\\重要文件\\openclaw-lite\\agent\\SKILLs\\file_control\\scripts\\temporary_data\\backups\\FILE-000003.bak",
+      "restored": false,
+      "restore_count": 0
+    },
+    {
+      "id": "FILE-000004",
+      "action": "write",
+      "path": "agent/prompts/identity.md",
+      "full_path": "E:\\重要文件\\openclaw-lite\\agent\\prompts\\identity.md",
+      "reason": "No reason provided",
+      "timestamp": "2026-03-27T14:42:03+08:00",
+      "existed_before": true,
+      "backup_file": "E:\\重要文件\\openclaw-lite\\agent\\SKILLs\\file_control\\scripts\\temporary_data\\backups\\FILE-000004.bak",
       "restored": false,
       "restore_count": 0
     }

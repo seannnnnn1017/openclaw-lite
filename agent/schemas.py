@@ -24,18 +24,31 @@ class AgentLayers:
         if not self.skills:
             return prompt
 
+        routing_rules = """
+[SKILL ROUTING]
+- Enabled skills are listed below as compact manifests, not full `SKILL.md` bodies.
+- When a skill is needed, prefer delegating with:
+  {"skill":"<skill-name>","action":"__delegate__","args":{"task":"<single-skill objective>","context":{"key":"value"}}}
+- Put the delegated objective in `args.task`.
+- Put concrete ids, urls, paths, constraints, dates, and output requirements in `args.context`.
+- Use a direct skill action only when the exact action and required arguments are obvious from the manifest.
+- Never emit more than one JSON object in a single reply.
+""".strip()
+
         skill_sections = []
         for skill in self.skills:
-            skill_name = skill.get("name", "unknown-skill")
-            skill_content = skill.get("content", "").strip()
-            if not skill_content:
+            manifest = skill.get("manifest") or {}
+            skill_text = str(manifest.get("text", "")).strip()
+            if not skill_text:
                 continue
-            skill_sections.append(f"[SKILL: {skill_name}]\n{skill_content}")
+            skill_sections.append(skill_text)
 
         if not skill_sections:
             return prompt
 
-        return f"{prompt}\n\n[AVAILABLE SKILLS]\n" + "\n\n".join(skill_sections)
+        return f"{prompt}\n\n{routing_rules}\n\n[AVAILABLE SKILL MANIFESTS]\n" + "\n\n".join(
+            skill_sections
+        )
 
     @staticmethod
     def from_json(data: Dict):

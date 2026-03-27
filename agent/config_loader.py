@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from schemas import AgentLayers
+from skill_manifest import build_skill_manifest
 
 try:
     from secret_store import SECRET_CONFIG_PATH, load_secret_config
@@ -138,6 +139,13 @@ class Config:
                         "name": skill_entry.get("name", skill_dir.name),
                         "path": str(skill_dir),
                         "content": skill_content,
+                        "manifest": build_skill_manifest(
+                            {
+                                "name": skill_entry.get("name", skill_dir.name),
+                                "content": skill_content,
+                                "metadata": skill_metadata,
+                            }
+                        ),
                         "tool": skill_entry.get("tool", {}),
                         "enabled": True,
                         "metadata": skill_metadata,
@@ -245,6 +253,16 @@ class Config:
 
     def reload_now(self):
         self._load()
+
+    def get_skill(self, skill_name: str) -> dict | None:
+        target = str(skill_name or "").strip()
+        if not target:
+            return None
+
+        for skill in self.skills:
+            if str(skill.get("name", "")).strip() == target:
+                return skill
+        return None
 
     def set_runtime_model(self, model_name: str):
         cleaned = model_name.strip()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 import threading
 from datetime import date, datetime, time, timedelta
@@ -283,6 +284,85 @@ def _resolve_task_prompt(
     return ""
 
 
+def _sanitize_task_prompt(task_prompt: str) -> str:
+    cleaned = _clean_text(task_prompt)
+    if not cleaned:
+        return ""
+
+    text = cleaned
+    chinese_number = r"(?:\d+|[零〇一二兩三四五六七八九十百千]+)"
+    clock_time = (
+        r"(?:"
+        r"(?:(?:[01]?\d|2[0-3]):[0-5]\d(?:\:[0-5]\d)?)"
+        r"|(?:(?:[1-9]|1[0-2])\s*(?:am|pm))"
+        r")"
+    )
+    zh_time_of_day = r"(?:凌晨|清晨|早上|上午|中午|下午|傍晚|晚上|夜裡|夜間)"
+    en_time_of_day = (
+        r"(?:early\s+morning|morning|afternoon|evening|tonight|"
+        r"in\s+the\s+morning|in\s+the\s+afternoon|in\s+the\s+evening)"
+    )
+    zh_recurring = (
+        rf"(?:每(?:隔)?\s*{chinese_number}\s*(?:分鐘|分|小時|個小時|鐘頭|個鐘頭|天|日|週|周|星期|個星期|月|個月)"
+        r"|每(?:天|日|週|周|星期|月|小時|鐘頭|分鐘)"
+        r"|每(?:週|周|星期)\s*[一二三四五六日天]"
+        r"|每個(?:小時|鐘頭|星期|月))"
+    )
+    en_recurring = (
+        r"(?:every\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|an?|couple\s+of)\s+"
+        r"(?:minute|minutes|hour|hours|day|days|week|weeks|month|months)"
+        r"|every\s+(?:minute|hour|day|week|month)"
+        r"|every\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+        r"|hourly|daily|weekly|monthly)"
+    )
+    zh_relative = (
+        r"(?:今天|今晚|今早|今天早上|今天上午|今天下午|今天晚上|"
+        r"明天|明晚|明早|明天早上|明天上午|明天下午|明天晚上|"
+        r"後天|後天早上|後天下午|後天晚上|"
+        r"本週|本周|這週|這周|這星期|下週|下周|下星期|"
+        r"下(?:週|周|星期)\s*[一二三四五六日天]|"
+        r"這(?:週|周|星期)\s*[一二三四五六日天]|"
+        r"本(?:週|周)\s*[一二三四五六日天]|"
+        r"下個月|這個月|本月)"
+    )
+    en_relative = (
+        r"(?:today|tomorrow|tonight|day\s+after\s+tomorrow|"
+        r"this\s+(?:morning|afternoon|evening|week|month)|"
+        r"next\s+(?:week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+        r"tomorrow\s+(?:morning|afternoon|evening))"
+    )
+    relative_phrase = (
+        rf"(?:{zh_relative}|{en_relative})"
+        rf"(?:\s*(?:{zh_time_of_day}|{en_time_of_day}))?"
+        rf"(?:\s*{clock_time})?"
+    )
+    time_only_phrase = rf"(?:(?:{zh_time_of_day}|{en_time_of_day})\s*)?(?:{clock_time})"
+    prefix_patterns = [
+        r"^(?:please|please\s+help(?:\s+me)?|help(?:\s+me)?|kindly|can\s+you|could\s+you|would\s+you)\s+",
+        r"^(?:請(?:幫我|你|協助)?|麻煩(?:你)?|幫我|幫忙|請替我)\s*",
+        rf"^(?:{zh_recurring}|{en_recurring})\s*",
+        rf"^(?:(?:在|於|on|at|in|by|around|about)\s+)?{relative_phrase}\s*",
+        rf"^(?:(?:在|於|at|around|about)\s+)?{time_only_phrase}\s*",
+    ]
+
+    changed = True
+    while changed and text:
+        changed = False
+        for pattern in prefix_patterns:
+            updated = re.sub(pattern, "", text, count=1, flags=re.IGNORECASE).strip()
+            if updated != text:
+                text = updated
+                changed = True
+        updated = re.sub(r"^[,，、:：;；\-\(\)\[\]\s]+", "", text).strip()
+        if updated != text:
+            text = updated
+            changed = True
+
+    if not text:
+        return cleaned
+    return text
+
+
 def _scheduled_start(record: dict) -> datetime:
     return _combine_local(record["start_date"], record["start_time"])
 
@@ -460,6 +540,14 @@ def _normalize_record(record: dict) -> tuple[dict, bool]:
     return normalized, mutated
 
 
+def _should_purge_record(record: dict) -> bool:
+    if _bool(record.get("deleted", False)):
+        return True
+    if _bool(record.get("completed", False)):
+        return True
+    return False
+
+
 def _load_registry(registry_path: str | Path | None = None) -> dict:
     path = _ensure_storage(registry_path)
     raw = path.read_text(encoding="utf-8").strip()
@@ -485,6 +573,9 @@ def _load_registry(registry_path: str | Path | None = None) -> dict:
     changed = False
     for record in tasks:
         normalized, mutated = _normalize_record(record)
+        if _should_purge_record(normalized):
+            changed = True
+            continue
         normalized_tasks.append(normalized)
         changed = changed or mutated
 
@@ -603,6 +694,7 @@ def create_task(
     )
     if not resolved_prompt:
         raise ValueError("Missing task_prompt")
+    resolved_prompt = _sanitize_task_prompt(resolved_prompt)
 
     normalized_schedule_type = _normalize_schedule_type(schedule_type)
     normalized_start_time = _normalize_time(start_time)
@@ -763,7 +855,7 @@ def delete_task(name: str, *, reason: str = "", registry_path: str | Path | None
         record["next_run_at"] = ""
 
         normalized_record, _ = _normalize_record(record)
-        registry["tasks"][index] = normalized_record
+        registry["tasks"].pop(index)
         _save_registry(registry, registry_path)
         return normalized_record
 
@@ -801,6 +893,8 @@ def build_dispatch_prompt(record: dict, *, trigger: str, scheduled_for: str = ""
             f"Current local time: {_iso(now)}",
             "",
             "Execute the following task now. Use available skills if needed.",
+            "Treat the stored task prompt as the work to perform once right now, not as instructions to create another schedule.",
+            "Do not create or modify schedules unless the task instruction explicitly asks for scheduler management.",
             "Carry out the task instead of only describing a plan.",
             "",
             f"Task instruction: {record.get('task_prompt', '')}",
@@ -934,8 +1028,13 @@ def record_task_result(
         record["updated_at"] = _iso(now)
 
         normalized_record, _ = _normalize_record(record)
-        registry["tasks"][index] = normalized_record
+        if _should_purge_record(normalized_record):
+            registry["tasks"].pop(index)
+        else:
+            registry["tasks"][index] = normalized_record
         _save_registry(registry, registry_path)
+        if _should_purge_record(normalized_record):
+            return None
         return normalized_record
 
 

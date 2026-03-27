@@ -101,7 +101,7 @@ class AgentApplication:
             try:
                 reply = self.main_agent.run(event["dispatch_prompt"])
                 status = "error" if reply.strip().startswith("[ERROR]") else "ok"
-                record_task_result(
+                updated_task = record_task_result(
                     event.get("task_name", ""),
                     status=status,
                     response_text="" if status == "error" else reply,
@@ -113,7 +113,7 @@ class AgentApplication:
             except Exception as exc:
                 error_text = str(exc)
                 reply = f"[ERROR] {error_text}"
-                record_task_result(
+                updated_task = record_task_result(
                     event.get("task_name", ""),
                     status="error",
                     response_text="",
@@ -125,7 +125,7 @@ class AgentApplication:
 
         reply_markup = None
         task_id = str(event.get("task_id", "")).strip()
-        if task_id:
+        if updated_task and task_id:
             reply_markup = task_action_reply_markup(task_id)
 
         final_parts = [format_scheduled_trigger(event)]

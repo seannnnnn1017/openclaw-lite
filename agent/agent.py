@@ -6,6 +6,7 @@ import re
 import threading
 from pathlib import Path
 
+from delegated_skill_executor import DelegatedSkillExecutor
 from lmstudio_client import LMStudioClient
 from schemas import Message, ChatRequest
 from skill_client import SkillClient
@@ -166,6 +167,189 @@ class SimpleAgent:
             api_key=self.config.api_key,
         )
         self.skill_client = SkillClient(base_url=self.config.skill_server_url)
+
+    def _get_skill_config(self, skill_name: str) -> dict | None:
+        if hasattr(self.config, "get_skill"):
+            return self.config.get_skill(skill_name)
+
+        for skill in getattr(self.config, "skills", []):
+            if str(skill.get("name", "")).strip() == str(skill_name or "").strip():
+                return skill
+        return None
+
+    def _skill_prefers_delegation(self, skill_name: str) -> bool:
+        skill = self._get_skill_config(skill_name)
+        manifest = skill.get("manifest", {}) if isinstance(skill, dict) else {}
+        return bool(manifest.get("delegation_preferred", False))
+
+    def _normalize_delegate_args(self, args: dict) -> tuple[str, dict]:
+        if not isinstance(args, dict):
+            return "Complete the delegated skill task.", {"raw_args": args}
+
+        task = str(args.get("task", "")).strip() or "Complete the delegated skill task."
+        context_value = args.get("context", {})
+        if isinstance(context_value, dict):
+            context = dict(context_value)
+        elif context_value in ("", None):
+            context = {}
+        else:
+            context = {"value": context_value}
+
+        extra_args = {
+            key: value
+            for key, value in args.items()
+            if key not in {"task", "context"}
+        }
+        if extra_args:
+            context["delegation_args"] = extra_args
+        return task, context
+
+    def _flatten_text_content(self, value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            parts = []
+            for key, item in value.items():
+                parts.append(str(key))
+                parts.append(self._flatten_text_content(item))
+            return " ".join(part for part in parts if part)
+        if isinstance(value, (list, tuple, set)):
+            parts = [self._flatten_text_content(item) for item in value]
+            return " ".join(part for part in parts if part)
+        return str(value)
+
+    def _contains_relative_schedule_language(self, text: str) -> bool:
+        cleaned = str(text or "").strip().casefold()
+        if not cleaned:
+            return False
+
+        direct_markers = [
+            "今天",
+            "今日",
+            "今晚",
+            "今早",
+            "今晨",
+            "今午",
+            "今下午",
+            "明天",
+            "明日",
+            "明晚",
+            "明早",
+            "後天",
+            "后天",
+            "後晚",
+            "后晚",
+            "下週",
+            "下周",
+            "下星期",
+            "下礼拜",
+            "下禮拜",
+            "tomorrow",
+            "day after tomorrow",
+            "today",
+            "tonight",
+            "this evening",
+            "this afternoon",
+            "this morning",
+            "next week",
+            "next monday",
+            "next tuesday",
+            "next wednesday",
+            "next thursday",
+            "next friday",
+            "next saturday",
+            "next sunday",
+        ]
+        if any(marker in cleaned for marker in direct_markers):
+            return True
+
+        return bool(
+            re.search(
+                r"(這週|这周|本週|本周|下週[一二三四五六日天]?|下周[一二三四五六日天]?|"
+                r"this\s+week|next\s+week|next\s+(mon|tues|wednes|thurs|fri|satur|sun)day)",
+                cleaned,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    def _should_preflight_schedule_time(
+        self,
+        skill_call: dict,
+        *,
+        user_input: str,
+        already_resolved: bool,
+    ) -> bool:
+        if already_resolved:
+            return False
+        if str(skill_call.get("skill", "")).strip() != "schedule-task":
+            return False
+
+        action = str(skill_call.get("action", "")).strip()
+        if action not in {"create", "__delegate__"}:
+            return False
+
+        args = skill_call.get("args", {}) if isinstance(skill_call.get("args"), dict) else {}
+        relevant_text = [str(user_input or "").strip()]
+        if action == "__delegate__":
+            relevant_text.append(str(args.get("task", "")).strip())
+            relevant_text.append(self._flatten_text_content(args.get("context", {})))
+
+        return self._contains_relative_schedule_language(" ".join(part for part in relevant_text if part))
+
+    def _build_schedule_time_preflight_call(self) -> dict:
+        return {
+            "message": "Resolving the current local time before scheduling a relative date.",
+            "skill": "time-query",
+            "action": "now",
+            "args": {
+                "timezone": "local",
+            },
+        }
+
+    def _execute_delegated_skill(self, skill_call: dict):
+        skill_name = str(skill_call.get("skill", "")).strip()
+        skill = self._get_skill_config(skill_name)
+        if not skill:
+            return {
+                "status": "error",
+                "skill": skill_name or "unknown-skill",
+                "action": "__delegate__",
+                "error": f"Unknown skill: {skill_name}",
+            }
+
+        action = str(skill_call.get("action", "")).strip()
+        args = skill_call.get("args", {}) if isinstance(skill_call.get("args"), dict) else {}
+        if action == "__delegate__":
+            task, context = self._normalize_delegate_args(args)
+        else:
+            task = (
+                f"Carry out the requested `{action}` action for skill `{skill_name}` "
+                "using the provided arguments and recover gracefully if the first attempt fails."
+            )
+            context = {
+                "requested_action": action,
+                "requested_args": args,
+            }
+
+        executor = DelegatedSkillExecutor(
+            config=self.config,
+            client=self.client,
+            skill_client=self.skill_client,
+            display=self.display,
+        )
+        return executor.run(skill=skill, task=task, context=context)
+
+    def _skill_result_has_error(self, skill_result: dict) -> bool:
+        if not isinstance(skill_result, dict):
+            return True
+        if str(skill_result.get("status", "")).strip().lower() == "error":
+            return True
+        result = skill_result.get("result", {})
+        if isinstance(result, dict) and str(result.get("status", "")).strip().lower() == "error":
+            return True
+        return False
 
     def _chat(self, messages, *, response_stream_callback=None) -> str:
         request = ChatRequest(
@@ -420,6 +604,7 @@ class SimpleAgent:
             persisted_user_input = user_input if history_user_input is None else history_user_input
             messages = self._build_base_messages(user_input)
             last_response = ""
+            schedule_time_resolved = False
 
             for step in range(self.max_tool_steps + 1):
                 try:
@@ -470,17 +655,61 @@ class SimpleAgent:
                     self._append_history(persisted_user_input, max_step_error)
                     return max_step_error
 
+                if self._should_preflight_schedule_time(
+                    skill_call,
+                    user_input=user_input,
+                    already_resolved=schedule_time_resolved,
+                ):
+                    schedule_time_resolved = True
+                    preflight_call = self._build_schedule_time_preflight_call()
+                    if preflight_call.get("message"):
+                        self._print_tool_message(step + 1, preflight_call["message"])
+                    self._print_tool_call(step + 1, preflight_call)
+                    messages.append(
+                        Message(role="assistant", content=json.dumps(preflight_call, ensure_ascii=False))
+                    )
+
+                    try:
+                        preflight_result = self.skill_client.execute(
+                            skill=preflight_call["skill"],
+                            action=preflight_call["action"],
+                            args=preflight_call["args"],
+                        )
+                    except Exception as e:
+                        preflight_result = {
+                            "status": "error",
+                            "skill": preflight_call["skill"],
+                            "action": preflight_call["action"],
+                            "error": str(e),
+                        }
+
+                    self._print_tool_result(step + 1, preflight_result)
+                    messages.append(self._build_tool_result_message(preflight_result))
+                    continue
+
                 if skill_call.get("message"):
                     self._print_tool_message(step + 1, skill_call["message"])
                 self._print_tool_call(step + 1, skill_call)
                 messages.append(Message(role="assistant", content=json.dumps(skill_call, ensure_ascii=False)))
 
                 try:
-                    skill_result = self.skill_client.execute(
-                        skill=skill_call["skill"],
-                        action=skill_call["action"],
-                        args=skill_call["args"],
-                    )
+                    if skill_call["action"] == "__delegate__":
+                        skill_result = self._execute_delegated_skill(skill_call)
+                    else:
+                        skill_result = self.skill_client.execute(
+                            skill=skill_call["skill"],
+                            action=skill_call["action"],
+                            args=skill_call["args"],
+                        )
+                        if (
+                            self._skill_result_has_error(skill_result)
+                            and self._skill_prefers_delegation(skill_call["skill"])
+                        ):
+                            self.display.tool_note(
+                                step + 1,
+                                "Direct skill call failed. Retrying through the delegated specialist.",
+                            )
+                            skill_result = self._execute_delegated_skill(skill_call)
                 except Exception as e:
                     skill_result = {
                         "status": "error",
