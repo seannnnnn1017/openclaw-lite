@@ -11,6 +11,7 @@ metadata: { "openclaw": { "requires": { "bins": ["python"] } } }
 Use this skill when the user asks what time it is now, what date it is today, what time it is in another timezone or city, wants multiple current times compared, or wants a provided datetime converted between timezones.
 
 This skill is selected by the agent and executed by the skill server.
+It may also be executed automatically in the background when its `skills_config.json` entry is configured as a default-execution skill.
 When this skill is needed, reply with exactly one JSON object and nothing else.
 
 Base JSON shape:

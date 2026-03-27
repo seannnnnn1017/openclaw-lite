@@ -71,14 +71,10 @@ def _skill_specific_notes(skill_name: str) -> list[str]:
         ]
     if skill_name == "notion-basic":
         return [
-            "Uses the Notion REST API and reads credentials from env vars or `agent/data/system/secrets.local.json`.",
-            "When no Notion page target is provided, the skill falls back to the default page configured in `agent/data/system/secrets.local.json` via `notion.default_parent_page_id` or `notion.default_parent_page_url`.",
-            "Page content operations use Notion's markdown endpoints for full-page replace, append, and targeted search-and-replace.",
-            "Notion search uses the official `/search` API for shared page and data source title metadata only; it is not full-text attachment search.",
-            "Downloaded Notion images are saved locally under `agent/data/notion_downloads/` unless an explicit path is provided.",
-            "Structure discovery relies on live `sync_architecture` calls instead of a local architecture cache.",
-            "Each `sync_architecture` call is capped at depth 3; to inspect deeper structure, call it again from a deeper page, database, or data source target.",
-            "Delete is implemented as moving a page to trash; the Notion API does not permanently delete pages.",
+            "Primary access goes through the external Notion MCP server over HTTP; prefer native MCP actions `tools/list` and `tools/call` to reach the live tool catalog.",
+            "When `notion.mcp_auto_start` is enabled (default), the skill can launch `@notionhq/notion-mcp-server` locally through `npx` using the configured Notion token; the first startup may take longer, so `notion.mcp_startup_timeout_seconds` can be raised if needed.",
+            "The local bridge still handles auth, session initialization, SSE parsing, and auto-start; the model should not emit `initialize` or notification methods.",
+            "This skill no longer includes the older hand-written Notion REST wrapper; all Notion work goes through MCP.",
         ]
     if skill_name == "schedule-task":
         return [
@@ -107,7 +103,7 @@ def _skill_state_paths(skill_name: str, project_root: Path) -> list[str]:
         return [
             f"`{_relative_path(project_root / 'agent/data/system/secrets.example.json', project_root)}`: example shared secret configuration",
             f"`{_relative_path(project_root / 'agent/data/system/secrets.local.json', project_root)}`: ignored local shared secrets for LLM, Telegram, and Notion",
-            f"`{_relative_path(project_root / 'agent/data/notion_downloads', project_root)}/`: local downloads created by `notion-basic.download_image`",
+            f"`{_relative_path(project_root / 'agent/.codex-temp/notion_mcp_server.log', project_root)}`: local Notion MCP auto-start log when enabled",
         ]
     if skill_name == "schedule-task":
         return [
@@ -128,6 +124,8 @@ def _skill_block(skill: dict, project_root: Path) -> str:
     metadata = skill.get("metadata", {})
     description = _normalize_whitespace(metadata.get("description", "")) or "No description provided."
     actions = extract_supported_actions(skill.get("content", ""))
+    execution_mode = str(skill.get("execution_mode", "invoked")).strip() or "invoked"
+    auto_context = skill.get("auto_context") if isinstance(skill.get("auto_context"), dict) else None
     examples_path = skill_dir / "examples.md"
     skill_md_path = skill_dir / "SKILL.md"
     skill_config_path = skill_dir / "skills_config.json"
@@ -135,6 +133,7 @@ def _skill_block(skill: dict, project_root: Path) -> str:
     lines = [
         f"### {skill_name}",
         f"- Description: {description}",
+        f"- Execution mode: `{execution_mode}`",
         f"- Directory: `{skill_rel}`",
         f"- Tool entrypoint: `{tool_module}:{tool_function}`",
         f"- Tool source file: `{tool_file_rel}`",
@@ -142,6 +141,18 @@ def _skill_block(skill: dict, project_root: Path) -> str:
         f"- Key files: `{_relative_path(skill_md_path, project_root)}`, `{_relative_path(skill_config_path, project_root)}`"
         + (f", `{_relative_path(examples_path, project_root)}`" if examples_path.exists() else ""),
     ]
+
+    if auto_context:
+        trigger_bits = []
+        if auto_context.get("trigger_mode") == "always":
+            trigger_bits.append("always")
+        if auto_context.get("contains_any"):
+            trigger_bits.append(f"contains_any={len(auto_context['contains_any'])}")
+        if auto_context.get("regex_any"):
+            trigger_bits.append(f"regex_any={len(auto_context['regex_any'])}")
+        lines.append(
+            f"- Auto context: action=`{auto_context.get('action', '')}`; trigger={', '.join(trigger_bits) if trigger_bits else 'none'}; once_per_turn={'yes' if auto_context.get('once_per_turn', True) else 'no'}"
+        )
 
     state_paths = _skill_state_paths(skill_name, project_root)
     if state_paths:
@@ -209,6 +220,7 @@ def generate_system_architecture(config) -> Path:
     state_lines = [
         f"`{_relative_path(config.path, project_root)}`: non-secret runtime config",
         f"`{_relative_path(agent_root / 'data/system/secrets.local.json', project_root)}`: local secrets for LLM, Telegram, Notion",
+        f"`{_relative_path(agent_root / '.codex-temp/debug_sessions', project_root)}/`: per-startup debug session JSONL logs",
         f"`{telegram_state_rel}`: Telegram offset + known chats",
         f"`{telegram_image_storage_rel}/`: downloaded Telegram image files",
         f"`{_relative_path(agent_root / 'SKILLs/schedule_task/scripts/temporary_data/task_registry.json', project_root)}`: schedule registry",
@@ -238,7 +250,7 @@ def generate_system_architecture(config) -> Path:
         "`/task ...` commands manipulate the schedule registry directly and do not require the LLM.",
         "`/clear cache` only deletes `.codex-temp` directories.",
         "`schedule-task` is agent-native; tasks stop when the agent process stops.",
-        "Notion structure inspection now uses live `sync_architecture` calls with a maximum depth of 3 per call.",
+        "Notion work now goes only through the live Notion MCP tool catalog.",
         "Secrets should stay in `agent/data/system/secrets.local.json` or environment variables.",
     ]
 

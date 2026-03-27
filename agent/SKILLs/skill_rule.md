@@ -81,7 +81,7 @@ Important files for `notion_basic`:
 - `agent/SKILLs/notion_basic/SKILL.md`: prompt-facing skill description
 - `agent/SKILLs/notion_basic/examples.md`: usage examples for the model
 - `agent/SKILLs/notion_basic/skills_config.json`: runtime registration
-- `agent/SKILLs/notion_basic/scripts/notion_tool.py`: Notion REST API tool implementation for page-level CRUD and markdown content operations
+- `agent/SKILLs/notion_basic/scripts/notion_mcp_tool.py`: thin Notion MCP bridge that forwards native MCP `tools/list` and `tools/call` requests over HTTP
 - `agent/data/system/secrets.example.json`: example local secret layout for shared LLM, Telegram, and Notion credentials
 - `agent/data/system/secrets.local.json`: ignored local secret store used by config loading and skills
 
@@ -103,6 +103,7 @@ Current pattern:
     {
       "name": "file-control",
       "enabled": true,
+      "execution_mode": "invoked",
       "path": "file_control",
       "tool": {
         "type": "python_function",
@@ -117,14 +118,32 @@ Current pattern:
 Field rules:
 - `name`: public skill name used by the agent in tool JSON
 - `enabled`: only enabled skills are loaded
+- `execution_mode`: `invoked` for normal tool routing, or `default` for automatic background execution when the configured trigger matches
 - `path`: folder path used to resolve the SKILL directory
+- `auto_context`: optional automatic background execution config used when `execution_mode` is `default`
 - `tool.type`: current project uses `python_function`
 - `tool.module`: import path for the tool module
 - `tool.function`: callable entrypoint, usually `run`
 
+`auto_context` rules:
+- `action`: tool action to execute automatically
+- `args`: fixed argument object for the automatic action
+- `trigger.mode`: `always` or `match_any`
+- `trigger.contains_any`: substring list checked case-insensitively against the current turn text
+- `trigger.regex_any`: regex list checked against the current turn text
+- `once_per_turn`: when true, the automatic action runs at most once per user turn
+- `success_prompt`: internal context template appended back to the model after success
+- `error_prompt`: internal context template appended back to the model after failure
+
+Template placeholders supported in `success_prompt` / `error_prompt`:
+- `{skill_name}`
+- `{action}`
+- `{result_json}`
+
 Current loading behavior:
 - The loader scans `agent/SKILLs/**/skills_config.json`
 - Only `enabled: true` entries are added to the runtime registry
+- `execution_mode` and `auto_context` are loaded into the runtime skill definition
 
 ## 6. SKILL.md Rules
 
@@ -201,6 +220,8 @@ Current load flow:
 Important current behavior:
 - SKILLs hot reload when config or tracked prompt/skill files change
 - Only enabled SKILLs are included in `config.skills`
+- Removing a loaded skill file or whole skill folder is deletion-safe; the next reload drops that skill instead of crashing on missing paths
+- If a `skills_config.json` appears before its matching `SKILL.md`, the loader keeps watching the missing `SKILL.md` path so the skill can come online automatically once the file is added
 
 ## 9. How SKILL Content Enters the Prompt
 
@@ -257,9 +278,10 @@ The main runtime loop is in:
 Current behavior:
 1. Build system prompt from prompts + SKILL docs
 2. Send messages to the LLM
-3. Parse the reply
-4. If it is normal text, return it to the user
-5. If it is SKILL JSON:
+3. Before each model/tool step, silently run any matching `default` skills and append their internal context back into the conversation
+4. Parse the reply
+5. If it is normal text, return it to the user
+6. If it is SKILL JSON:
    - show optional `[TOOL] step=n note: ...`
    - show `[TOOL] step=n call: ...`
    - call the skill server
@@ -271,6 +293,7 @@ Additional current behavior:
 - `<think>...</think>` blocks are extracted and shown as `[THINK n]`
 - config or prompt reload notices are shown as `[SYSTEM]`
 - the agent currently limits tool steps with `max_tool_steps`
+- matching `default` skills are executed silently and do not emit visible `[TOOL]` call/result events
 
 ## 12. Skill Server Logic
 

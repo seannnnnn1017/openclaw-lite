@@ -3,6 +3,7 @@
     {
       "name": "schedule-task",
       "enabled": true,
+      "execution_mode": "invoked",
       "path": "schedule_task",
       "tool": {
         "type": "python_function",

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 try:
     from agent import SimpleAgent
     from chat_scheduler import ChatScheduler
     from config_loader import Config
+    from debug_session_logger import DebugSessionLogger
     from lmstudio_client import LMStudioClient
     from schedule_runtime import record_task_result
     from system_doc_generator import generate_system_architecture
@@ -14,6 +16,7 @@ except ImportError:
     from agent.agent import SimpleAgent
     from agent.chat_scheduler import ChatScheduler
     from agent.config_loader import Config
+    from agent.debug_session_logger import DebugSessionLogger
     from agent.lmstudio_client import LMStudioClient
     from agent.schedule_runtime import record_task_result
     from agent.system_doc_generator import generate_system_architecture
@@ -36,6 +39,7 @@ class AgentApplication:
         )
         self.config = Config(str(resolved_config_path))
         self.display = TerminalDisplay()
+        self.debug_logger = DebugSessionLogger(self.agent_root / ".codex-temp" / "debug_sessions")
         self.main_agent = self._build_agent_session()
         self.scheduler = ChatScheduler(on_event=self.on_scheduled_event)
         self.telegram_runtime = TelegramRuntime(
@@ -46,18 +50,34 @@ class AgentApplication:
         )
         architecture_path = generate_system_architecture(self.config)
         self.display.system(f"System doc generated: {architecture_path}")
+        self.display.system(f"Debug session log: {self.debug_logger.path}")
+        self.debug_logger.log_event(
+            "session_start",
+            pid=os.getpid(),
+            config_path=str(resolved_config_path),
+            model=self.config.model,
+            skill_count=len(self.config.skills),
+            telegram_enabled=self.config.telegram_enabled,
+            log_path=str(self.debug_logger.path),
+        )
 
     def _build_agent_session(self) -> SimpleAgent:
         return SimpleAgent(
             config=self.config,
             client=LMStudioClient(base_url=self.config.base_url, api_key=self.config.api_key),
             display=self.display,
+            debug_logger=self.debug_logger,
         )
 
     def reload_runtime(self) -> Path:
         self.config.reload_now()
         self.main_agent.refresh_runtime_clients()
         self.telegram_runtime.refresh_runtime_clients()
+        self.debug_logger.log_event(
+            "manual_reload",
+            model=self.config.model,
+            skill_count=len(self.config.skills),
+        )
         return generate_system_architecture(self.config)
 
     def _handle_cli_command(self, command_line: str, *, agent: SimpleAgent) -> dict:
@@ -99,7 +119,16 @@ class AgentApplication:
             self.display.system_block(text)
 
             try:
-                reply = self.main_agent.run(event["dispatch_prompt"])
+                reply = self.main_agent.run(
+                    event["dispatch_prompt"],
+                    debug_context={
+                        "source": "scheduler",
+                        "task_id": event.get("task_id"),
+                        "task_name": event.get("task_name"),
+                        "trigger": event.get("trigger"),
+                        "scheduled_for": event.get("scheduled_for"),
+                    },
+                )
                 status = "error" if reply.strip().startswith("[ERROR]") else "ok"
                 updated_task = record_task_result(
                     event.get("task_name", ""),
@@ -160,10 +189,17 @@ class AgentApplication:
                     continue
 
                 try:
-                    reply = self.main_agent.run(user_input)
+                    reply = self.main_agent.run(
+                        user_input,
+                        debug_context={
+                            "source": "terminal",
+                            "session": "main",
+                        },
+                    )
                     self.display.agent(reply)
                 except Exception as exc:
                     self.display.error(str(exc))
         finally:
+            self.debug_logger.log_event("session_stop")
             self.telegram_runtime.stop()
             self.scheduler.stop()

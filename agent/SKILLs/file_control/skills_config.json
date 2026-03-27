@@ -3,6 +3,7 @@
     {
       "name": "file-control",
       "enabled": true,
+      "execution_mode": "invoked",
       "path": "file_control",
       "tool": {
         "type": "python_function",

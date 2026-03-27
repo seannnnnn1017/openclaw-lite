@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 
+from auto_skill_context import normalize_auto_context, normalize_execution_mode
 from schemas import AgentLayers
 from skill_manifest import build_skill_manifest
 
@@ -15,7 +16,7 @@ class Config:
     def __init__(self, path: str):
         self.path = Path(path).resolve()
         self.base_dir = self.path.parent.parent
-        self._last_mtime = None
+        self._last_watch_snapshot = {}
         self._prompt_file_paths = []
         self._skill_file_paths = []
         self._secret_file_paths = []
@@ -114,6 +115,28 @@ class Config:
 
         return config_path.parent
 
+    def _safe_read_json(self, path: Path):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return None
+
+    def _safe_file_signature(self, path: Path) -> tuple[str, int, int] | tuple[str]:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            return ("missing",)
+        except OSError:
+            return ("unavailable",)
+        return ("file", stat.st_mtime_ns, stat.st_size)
+
+    def _build_watch_snapshot(self) -> dict[str, tuple]:
+        snapshot = {}
+        for path in self._collect_tracked_paths():
+            key = str(path)
+            snapshot[key] = self._safe_file_signature(path)
+        return snapshot
+
     def _load_skills(self) -> list[dict]:
         loaded_skills = []
         tracked_paths = []
@@ -121,7 +144,9 @@ class Config:
 
         for skill_config_path in skill_config_paths:
             tracked_paths.append(skill_config_path)
-            data = json.loads(skill_config_path.read_text(encoding="utf-8"))
+            data = self._safe_read_json(skill_config_path)
+            if not isinstance(data, dict):
+                continue
 
             for skill_entry in data.get("skills", []):
                 if not skill_entry.get("enabled", False):
@@ -129,11 +154,16 @@ class Config:
 
                 skill_dir = self._resolve_skill_dir(skill_config_path, skill_entry)
                 skill_md_path = skill_dir / "SKILL.md"
+                tracked_paths.append(skill_md_path)
                 if not skill_md_path.exists():
                     continue
 
-                skill_metadata, skill_content = self._parse_skill_markdown(skill_md_path)
-                tracked_paths.append(skill_md_path)
+                try:
+                    skill_metadata, skill_content = self._parse_skill_markdown(skill_md_path)
+                except (FileNotFoundError, OSError):
+                    continue
+                execution_mode = normalize_execution_mode(skill_entry.get("execution_mode"))
+                auto_context = normalize_auto_context(skill_entry.get("auto_context"))
                 loaded_skills.append(
                     {
                         "name": skill_entry.get("name", skill_dir.name),
@@ -144,10 +174,14 @@ class Config:
                                 "name": skill_entry.get("name", skill_dir.name),
                                 "content": skill_content,
                                 "metadata": skill_metadata,
+                                "execution_mode": execution_mode,
+                                "auto_context": auto_context,
                             }
                         ),
                         "tool": skill_entry.get("tool", {}),
                         "enabled": True,
+                        "execution_mode": execution_mode,
+                        "auto_context": auto_context,
                         "metadata": skill_metadata,
                     }
                 )
@@ -157,13 +191,22 @@ class Config:
 
     def _collect_tracked_paths(self) -> list[Path]:
         skill_config_paths = list(self.base_dir.glob("SKILLs/**/skills_config.json"))
-        return (
+        paths = (
             [self.path]
             + self._prompt_file_paths
             + self._skill_file_paths
             + self._secret_file_paths
             + skill_config_paths
         )
+        unique_paths = []
+        seen = set()
+        for path in paths:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_paths.append(path)
+        return unique_paths
 
     def _load(self):
         data = json.loads(self.path.read_text(encoding="utf-8"))
@@ -239,14 +282,11 @@ class Config:
             else str((self.base_dir / "data" / "telegram_media").resolve())
         )
 
-        all_paths = self._collect_tracked_paths()
-        self._last_mtime = max(p.stat().st_mtime for p in all_paths)
+        self._last_watch_snapshot = self._build_watch_snapshot()
 
     def reload_if_changed(self):
-        all_paths = self._collect_tracked_paths()
-        latest_mtime = max(p.stat().st_mtime for p in all_paths)
-
-        if latest_mtime != self._last_mtime:
+        latest_snapshot = self._build_watch_snapshot()
+        if latest_snapshot != self._last_watch_snapshot:
             self._load()
             return True
         return False

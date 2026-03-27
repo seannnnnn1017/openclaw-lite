@@ -6,6 +6,7 @@ import re
 import threading
 from pathlib import Path
 
+from auto_skill_context import collect_auto_context_messages
 from delegated_skill_executor import DelegatedSkillExecutor
 from lmstudio_client import LMStudioClient
 from schemas import Message, ChatRequest
@@ -19,15 +20,24 @@ except ModuleNotFoundError:
 
 
 class SimpleAgent:
-    def __init__(self, config, client, display=None):
+    def __init__(self, config, client, display=None, debug_logger=None):
         self.config = config
         self.client = client
         self.display = display or TerminalDisplay()
+        self.debug_logger = debug_logger
         self.history = []
         self.history_lock = threading.Lock()
         self.run_lock = threading.RLock()
         self.skill_client = SkillClient(base_url=config.skill_server_url)
         self.max_tool_steps = 20
+
+    def _log_debug(self, kind: str, **payload):
+        if not self.debug_logger:
+            return
+        try:
+            self.debug_logger.log_event(kind, **payload)
+        except Exception:
+            return
 
     def _extract_think_blocks(self, text: str):
         if not text:
@@ -82,7 +92,7 @@ class SimpleAgent:
 
         return " ".join(parts)
 
-    def _summarize_tool_result(self, skill_result: dict) -> str:
+    def _summarize_tool_result(self, skill_result: dict, *, depth: int = 0) -> str:
         parts = [
             f"status={skill_result.get('status', '')}",
             f"skill={skill_result.get('skill', '')}",
@@ -110,6 +120,12 @@ class SimpleAgent:
                     parts.append(f"target_occurrences={data['target_occurrences']}")
                 if "replaced_count" in data:
                     parts.append(f"replaced_count={data['replaced_count']}")
+                if "tool_calls" in data:
+                    parts.append(f"tool_calls={data['tool_calls']}")
+                if depth < 1 and isinstance(data.get("last_tool_result"), dict):
+                    nested_summary = self._summarize_tool_result(data["last_tool_result"], depth=depth + 1)
+                    if nested_summary:
+                        parts.append(f'last_tool="{nested_summary}"')
         elif "error" in skill_result:
             parts.append(f'error="{skill_result["error"]}"')
 
@@ -121,9 +137,22 @@ class SimpleAgent:
     def _print_tool_result(self, step: int, skill_result: dict):
         self.display.tool_result(step, self._summarize_tool_result(skill_result))
 
-    def _append_history(self, user_input, response: str):
+    def _truncate_history_text(self, text: str, *, limit: int = 500) -> str:
+        cleaned = " ".join(str(text or "").split())
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[: limit - 3].rstrip() + "..."
+
+    def _build_tool_history_entry(self, *, step: int, kind: str, summary: str) -> str:
+        return f"[TOOL {kind} step={step}] {self._truncate_history_text(summary)}"
+
+    def _append_history(self, user_input, response: str, *, assistant_events: list[str] | None = None):
         with self.history_lock:
             self.history.append(Message(role="user", content=user_input))
+            cleaned_events = [str(event or "").strip() for event in (assistant_events or []) if str(event or "").strip()]
+            if cleaned_events:
+                tool_history_message = "[TOOL HISTORY]\n" + "\n".join(cleaned_events)
+                self.history.append(Message(role="assistant", content=tool_history_message))
             self.history.append(Message(role="assistant", content=response))
             if len(self.history) > 10:
                 self.history = self.history[-10:]
@@ -182,6 +211,14 @@ class SimpleAgent:
         manifest = skill.get("manifest", {}) if isinstance(skill, dict) else {}
         return bool(manifest.get("delegation_preferred", False))
 
+    def _skill_delegation_mode(self, skill_name: str) -> str:
+        skill = self._get_skill_config(skill_name)
+        manifest = skill.get("manifest", {}) if isinstance(skill, dict) else {}
+        mode = str(manifest.get("delegation_mode", "")).strip()
+        if mode:
+            return mode
+        return "prefer" if self._skill_prefers_delegation(skill_name) else "direct_ok"
+
     def _normalize_delegate_args(self, args: dict) -> tuple[str, dict]:
         if not isinstance(args, dict):
             return "Complete the delegated skill task.", {"raw_args": args}
@@ -204,111 +241,39 @@ class SimpleAgent:
             context["delegation_args"] = extra_args
         return task, context
 
-    def _flatten_text_content(self, value) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value
-        if isinstance(value, dict):
-            parts = []
-            for key, item in value.items():
-                parts.append(str(key))
-                parts.append(self._flatten_text_content(item))
-            return " ".join(part for part in parts if part)
-        if isinstance(value, (list, tuple, set)):
-            parts = [self._flatten_text_content(item) for item in value]
-            return " ".join(part for part in parts if part)
-        return str(value)
-
-    def _contains_relative_schedule_language(self, text: str) -> bool:
-        cleaned = str(text or "").strip().casefold()
-        if not cleaned:
-            return False
-
-        direct_markers = [
-            "今天",
-            "今日",
-            "今晚",
-            "今早",
-            "今晨",
-            "今午",
-            "今下午",
-            "明天",
-            "明日",
-            "明晚",
-            "明早",
-            "後天",
-            "后天",
-            "後晚",
-            "后晚",
-            "下週",
-            "下周",
-            "下星期",
-            "下礼拜",
-            "下禮拜",
-            "tomorrow",
-            "day after tomorrow",
-            "today",
-            "tonight",
-            "this evening",
-            "this afternoon",
-            "this morning",
-            "next week",
-            "next monday",
-            "next tuesday",
-            "next wednesday",
-            "next thursday",
-            "next friday",
-            "next saturday",
-            "next sunday",
-        ]
-        if any(marker in cleaned for marker in direct_markers):
-            return True
-
-        return bool(
-            re.search(
-                r"(這週|这周|本週|本周|下週[一二三四五六日天]?|下周[一二三四五六日天]?|"
-                r"this\s+week|next\s+week|next\s+(mon|tues|wednes|thurs|fri|satur|sun)day)",
-                cleaned,
-                flags=re.IGNORECASE,
-            )
+    def _append_auto_context_messages(
+        self,
+        messages: list[Message],
+        *,
+        user_input: str = "",
+        skill_call: dict | None = None,
+        executed_skills: set[str],
+        debug_context: dict | None = None,
+    ) -> set[str]:
+        auto_messages, updated_executed = collect_auto_context_messages(
+            self.config.skills,
+            user_input=user_input,
+            skill_call=skill_call,
+            executed_skills=executed_skills,
         )
+        for index, content in enumerate(auto_messages, start=1):
+            messages.append(Message(role="user", content=content))
+            self._log_debug(
+                "auto_context",
+                debug_context=dict(debug_context or {}),
+                ordinal=index,
+                content=content,
+                skill_call=skill_call,
+            )
+        return updated_executed
 
-    def _should_preflight_schedule_time(
+    def _execute_delegated_skill(
         self,
         skill_call: dict,
         *,
-        user_input: str,
-        already_resolved: bool,
-    ) -> bool:
-        if already_resolved:
-            return False
-        if str(skill_call.get("skill", "")).strip() != "schedule-task":
-            return False
-
-        action = str(skill_call.get("action", "")).strip()
-        if action not in {"create", "__delegate__"}:
-            return False
-
-        args = skill_call.get("args", {}) if isinstance(skill_call.get("args"), dict) else {}
-        relevant_text = [str(user_input or "").strip()]
-        if action == "__delegate__":
-            relevant_text.append(str(args.get("task", "")).strip())
-            relevant_text.append(self._flatten_text_content(args.get("context", {})))
-
-        return self._contains_relative_schedule_language(" ".join(part for part in relevant_text if part))
-
-    def _build_schedule_time_preflight_call(self) -> dict:
-        return {
-            "message": "Resolving the current local time before scheduling a relative date.",
-            "skill": "time-query",
-            "action": "now",
-            "args": {
-                "timezone": "local",
-            },
-        }
-
-    def _execute_delegated_skill(self, skill_call: dict):
+        original_user_input: str = "",
+        trigger_reason: str = "",
+    ):
         skill_name = str(skill_call.get("skill", "")).strip()
         skill = self._get_skill_config(skill_name)
         if not skill:
@@ -321,8 +286,20 @@ class SimpleAgent:
 
         action = str(skill_call.get("action", "")).strip()
         args = skill_call.get("args", {}) if isinstance(skill_call.get("args"), dict) else {}
+        delegation_mode = self._skill_delegation_mode(skill_name)
         if action == "__delegate__":
             task, context = self._normalize_delegate_args(args)
+        elif delegation_mode == "specialist_only":
+            task = str(original_user_input or "").strip() or f"Handle the user's request using `{skill_name}`."
+            context = {
+                "original_user_input": str(original_user_input or "").strip(),
+                "requested_action": action,
+                "requested_args": args,
+                "hinted_skill_call": skill_call,
+                "hints_are_untrusted": True,
+            }
+            if trigger_reason:
+                context["specialist_trigger"] = trigger_reason
         else:
             task = (
                 f"Carry out the requested `{action}` action for skill `{skill_name}` "
@@ -338,8 +315,17 @@ class SimpleAgent:
             client=self.client,
             skill_client=self.skill_client,
             display=self.display,
+            debug_logger=self.debug_logger,
         )
-        return executor.run(skill=skill, task=task, context=context)
+        return executor.run(
+            skill=skill,
+            task=task,
+            context=context,
+            debug_context={
+                "source": "delegate",
+                "parent_skill_call": skill_call,
+            },
+        )
 
     def _skill_result_has_error(self, skill_result: dict) -> bool:
         if not isinstance(skill_result, dict):
@@ -531,12 +517,21 @@ class SimpleAgent:
 
     def _build_tool_result_message(self, skill_result: dict):
         result_json = json.dumps(skill_result, ensure_ascii=False)
-        message_text = (
-            "The skill server executed your JSON instruction.\n"
-            f"Skill result JSON:\n{result_json}\n\n"
-            "If more tool use is required, return exactly one JSON object."
-            " Otherwise, answer the original user request."
-        )
+        if self._skill_result_has_error(skill_result):
+            message_text = (
+                "The skill server returned an error for your JSON instruction.\n"
+                f"Skill result JSON:\n{result_json}\n\n"
+                "If recovery is possible, return exactly one JSON object."
+                " Otherwise, explain the failure clearly."
+                " Do not claim the requested side effect succeeded unless a later tool result confirms success."
+            )
+        else:
+            message_text = (
+                "The skill server executed your JSON instruction.\n"
+                f"Skill result JSON:\n{result_json}\n\n"
+                "If more tool use is required, return exactly one JSON object."
+                " Otherwise, answer the original user request."
+            )
         image_parts = self._build_tool_result_image_parts(skill_result)
         if not image_parts:
             return Message(role="user", content=message_text)
@@ -593,18 +588,34 @@ class SimpleAgent:
             }
         ]
 
-    def run(self, user_input, *, history_user_input=None, response_stream_callback=None) -> str:
+    def run(self, user_input, *, history_user_input=None, response_stream_callback=None, debug_context=None) -> str:
         with self.run_lock:
             if hasattr(self.config, "reload_if_changed"):
                 reloaded = bool(self.config.reload_if_changed())
                 if reloaded:
                     self.refresh_runtime_clients()
                     self.display.system("Config, prompts, or skills changed. Runtime reloaded.")
+                    self._log_debug("runtime_reload", debug_context=dict(debug_context or {}))
 
             persisted_user_input = user_input if history_user_input is None else history_user_input
             messages = self._build_base_messages(user_input)
             last_response = ""
-            schedule_time_resolved = False
+            turn_history_events = []
+            normalized_debug_context = dict(debug_context or {})
+            self._log_debug(
+                "user_input",
+                debug_context=normalized_debug_context,
+                user_input=user_input,
+                history_user_input=history_user_input,
+                persisted_user_input=persisted_user_input,
+            )
+            auto_context_executed: set[str] = set()
+            auto_context_executed = self._append_auto_context_messages(
+                messages,
+                user_input=user_input,
+                executed_skills=auto_context_executed,
+                debug_context=normalized_debug_context,
+            )
 
             for step in range(self.max_tool_steps + 1):
                 try:
@@ -613,9 +624,23 @@ class SimpleAgent:
                         response_stream_callback=response_stream_callback,
                     )
                 except Exception as e:
+                    self._log_debug(
+                        "chat_error",
+                        debug_context=normalized_debug_context,
+                        step=step + 1,
+                        error=str(e),
+                    )
                     return f"[ERROR] {e}"
 
                 cleaned_response, think_blocks = self._extract_think_blocks(response)
+                self._log_debug(
+                    "model_response",
+                    debug_context=normalized_debug_context,
+                    step=step + 1,
+                    raw_response=response,
+                    cleaned_response=cleaned_response,
+                    think_blocks=think_blocks,
+                )
                 for think_text in think_blocks:
                     self._print_think_block(step + 1, think_text)
 
@@ -630,7 +655,17 @@ class SimpleAgent:
                     if self._looks_like_tool_payload(cleaned_response or response):
                         if step >= self.max_tool_steps:
                             max_step_error = "[ERROR] Reached maximum tool steps while repairing malformed tool JSON"
-                            self._append_history(persisted_user_input, max_step_error)
+                            self._append_history(
+                                persisted_user_input,
+                                max_step_error,
+                                assistant_events=turn_history_events,
+                            )
+                            self._log_debug(
+                                "tool_loop_error",
+                                debug_context=normalized_debug_context,
+                                step=step + 1,
+                                error=max_step_error,
+                            )
                             return max_step_error
 
                         self.display.tool_note(
@@ -638,6 +673,12 @@ class SimpleAgent:
                             "Detected malformed tool JSON. Requesting a corrected tool instruction.",
                         )
                         malformed_response = cleaned_response or response
+                        self._log_debug(
+                            "malformed_tool_payload",
+                            debug_context=normalized_debug_context,
+                            step=step + 1,
+                            response=malformed_response,
+                        )
                         messages.append(Message(role="assistant", content=malformed_response))
                         messages.append(
                             Message(
@@ -647,54 +688,87 @@ class SimpleAgent:
                         )
                         continue
 
-                    self._append_history(persisted_user_input, visible_response)
+                    self._append_history(
+                        persisted_user_input,
+                        visible_response,
+                        assistant_events=turn_history_events,
+                    )
+                    self._log_debug(
+                        "final_response",
+                        debug_context=normalized_debug_context,
+                        step=step + 1,
+                        response=visible_response,
+                    )
                     return visible_response
 
                 if step >= self.max_tool_steps:
                     max_step_error = "[ERROR] Reached maximum tool steps before final answer"
-                    self._append_history(persisted_user_input, max_step_error)
+                    self._append_history(
+                        persisted_user_input,
+                        max_step_error,
+                        assistant_events=turn_history_events,
+                    )
+                    self._log_debug(
+                        "tool_loop_error",
+                        debug_context=normalized_debug_context,
+                        step=step + 1,
+                        error=max_step_error,
+                    )
                     return max_step_error
 
-                if self._should_preflight_schedule_time(
-                    skill_call,
+                updated_executed = self._append_auto_context_messages(
+                    messages,
                     user_input=user_input,
-                    already_resolved=schedule_time_resolved,
-                ):
-                    schedule_time_resolved = True
-                    preflight_call = self._build_schedule_time_preflight_call()
-                    if preflight_call.get("message"):
-                        self._print_tool_message(step + 1, preflight_call["message"])
-                    self._print_tool_call(step + 1, preflight_call)
-                    messages.append(
-                        Message(role="assistant", content=json.dumps(preflight_call, ensure_ascii=False))
-                    )
-
-                    try:
-                        preflight_result = self.skill_client.execute(
-                            skill=preflight_call["skill"],
-                            action=preflight_call["action"],
-                            args=preflight_call["args"],
-                        )
-                    except Exception as e:
-                        preflight_result = {
-                            "status": "error",
-                            "skill": preflight_call["skill"],
-                            "action": preflight_call["action"],
-                            "error": str(e),
-                        }
-
-                    self._print_tool_result(step + 1, preflight_result)
-                    messages.append(self._build_tool_result_message(preflight_result))
+                    skill_call=skill_call,
+                    executed_skills=auto_context_executed,
+                    debug_context=normalized_debug_context,
+                )
+                if updated_executed != auto_context_executed:
+                    auto_context_executed = updated_executed
                     continue
 
                 if skill_call.get("message"):
                     self._print_tool_message(step + 1, skill_call["message"])
                 self._print_tool_call(step + 1, skill_call)
+                turn_history_events.append(
+                    self._build_tool_history_entry(
+                        step=step + 1,
+                        kind="CALL",
+                        summary=self._summarize_tool_call(skill_call),
+                    )
+                )
+                self._log_debug(
+                    "tool_call",
+                    debug_context=normalized_debug_context,
+                    step=step + 1,
+                    skill_call=skill_call,
+                )
                 messages.append(Message(role="assistant", content=json.dumps(skill_call, ensure_ascii=False)))
 
                 try:
                     if skill_call["action"] == "__delegate__":
-                        skill_result = self._execute_delegated_skill(skill_call)
+                        skill_result = self._execute_delegated_skill(
+                            skill_call,
+                            original_user_input=user_input,
+                            trigger_reason="explicit_delegate",
+                        )
+                    elif self._skill_delegation_mode(skill_call["skill"]) == "specialist_only":
+                        self.display.tool_note(
+                            step + 1,
+                            "Routing this skill through the dedicated specialist before any live tool call.",
+                        )
+                        self._log_debug(
+                            "specialist_reroute",
+                            debug_context=normalized_debug_context,
+                            step=step + 1,
+                            skill_call=skill_call,
+                            reason="specialist_only",
+                        )
+                        skill_result = self._execute_delegated_skill(
+                            skill_call,
+                            original_user_input=user_input,
+                            trigger_reason="specialist_only",
+                        )
                     else:
                         skill_result = self.skill_client.execute(
                             skill=skill_call["skill"],
@@ -709,7 +783,11 @@ class SimpleAgent:
                                 step + 1,
                                 "Direct skill call failed. Retrying through the delegated specialist.",
                             )
-                            skill_result = self._execute_delegated_skill(skill_call)
+                            skill_result = self._execute_delegated_skill(
+                                skill_call,
+                                original_user_input=user_input,
+                                trigger_reason="direct_failure",
+                            )
                 except Exception as e:
                     skill_result = {
                         "status": "error",
@@ -719,7 +797,30 @@ class SimpleAgent:
                     }
 
                 self._print_tool_result(step + 1, skill_result)
+                turn_history_events.append(
+                    self._build_tool_history_entry(
+                        step=step + 1,
+                        kind="RESULT",
+                        summary=self._summarize_tool_result(skill_result),
+                    )
+                )
+                self._log_debug(
+                    "tool_result",
+                    debug_context=normalized_debug_context,
+                    step=step + 1,
+                    skill_result=skill_result,
+                )
                 messages.append(self._build_tool_result_message(skill_result))
 
-            self._append_history(persisted_user_input, last_response)
+            self._append_history(
+                persisted_user_input,
+                last_response,
+                assistant_events=turn_history_events,
+            )
+            self._log_debug(
+                "final_response",
+                debug_context=normalized_debug_context,
+                step=self.max_tool_steps + 1,
+                response=last_response,
+            )
             return last_response

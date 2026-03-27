@@ -440,6 +440,15 @@ class TelegramRuntime:
                     user_input,
                     history_user_input=history_user_input,
                     response_stream_callback=response_stream_callback,
+                    debug_context={
+                        "source": "telegram",
+                        "chat_id": chat_id,
+                        "user_id": user_id,
+                        "username": event.get("username"),
+                        "display_name": event.get("display_name"),
+                        "images": len(images),
+                        "caption": caption,
+                    },
                 )
             elif text.startswith("/"):
                 reply = self.handle_remote_command(text, session_agent)
@@ -447,6 +456,14 @@ class TelegramRuntime:
                 reply = session_agent.run(
                     text,
                     response_stream_callback=response_stream_callback,
+                    debug_context={
+                        "source": "telegram",
+                        "chat_id": chat_id,
+                        "user_id": user_id,
+                        "username": event.get("username"),
+                        "display_name": event.get("display_name"),
+                        "images": 0,
+                    },
                 )
 
         if images:

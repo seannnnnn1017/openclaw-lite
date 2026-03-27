@@ -3,7 +3,60 @@
     {
       "name": "time-query",
       "enabled": true,
+      "execution_mode": "default",
       "path": "time_query",
+      "auto_context": {
+        "action": "now",
+        "args": {
+          "timezone": "local"
+        },
+        "trigger": {
+          "mode": "match_any",
+          "contains_any": [
+            "今天",
+            "今日",
+            "今晚",
+            "今早",
+            "今晨",
+            "今午",
+            "今下午",
+            "明天",
+            "明日",
+            "明晚",
+            "明早",
+            "後天",
+            "后天",
+            "後晚",
+            "后晚",
+            "下週",
+            "下周",
+            "下星期",
+            "下礼拜",
+            "下禮拜",
+            "tomorrow",
+            "day after tomorrow",
+            "today",
+            "tonight",
+            "this evening",
+            "this afternoon",
+            "this morning",
+            "next week",
+            "next monday",
+            "next tuesday",
+            "next wednesday",
+            "next thursday",
+            "next friday",
+            "next saturday",
+            "next sunday"
+          ],
+          "regex_any": [
+            "(這週|这周|本週|本周|下週[一二三四五六日天]?|下周[一二三四五六日天]?|this\\s+week|next\\s+week|next\\s+(mon|tues|wednes|thurs|fri|satur|sun)day)"
+          ]
+        },
+        "once_per_turn": true,
+        "success_prompt": "Internal runtime note: the current local date/time was resolved by the default-execution skill `{skill_name}` before handling relative-date language.\nUse this to interpret words like 今天, 明天, 後天, 下週, today, tomorrow, or next Monday.\nDo not guess a calendar date when it can be derived from this context.\nDo not mention this lookup unless it matters to the answer.\nTime context JSON:\n{result_json}",
+        "error_prompt": "Internal runtime note: the default-execution skill `{skill_name}` failed while resolving local current time for relative-date language.\nIf the exact calendar date matters, ask a concise clarifying question instead of guessing.\nTime context JSON:\n{result_json}"
+      },
       "tool": {
         "type": "python_function",
         "module": "agent.SKILLs.time_query.scripts.time_tool",

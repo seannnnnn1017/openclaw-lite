@@ -5,16 +5,26 @@ import mimetypes
 import re
 from pathlib import Path
 
+from auto_skill_context import collect_auto_context_messages
 from schemas import ChatRequest, Message
 
 
 class DelegatedSkillExecutor:
-    def __init__(self, *, config, client, skill_client, display=None, max_tool_steps: int = 8):
+    def __init__(self, *, config, client, skill_client, display=None, debug_logger=None, max_tool_steps: int = 8):
         self.config = config
         self.client = client
         self.skill_client = skill_client
         self.display = display
+        self.debug_logger = debug_logger
         self.max_tool_steps = max_tool_steps
+
+    def _log_debug(self, kind: str, **payload):
+        if not self.debug_logger:
+            return
+        try:
+            self.debug_logger.log_event(kind, **payload)
+        except Exception:
+            return
 
     def _chat(self, messages) -> str:
         request = ChatRequest(
@@ -235,14 +245,33 @@ class DelegatedSkillExecutor:
             f"Previous reply:\n{invalid_response}"
         )
 
+    def _skill_result_has_error(self, skill_result: dict) -> bool:
+        if not isinstance(skill_result, dict):
+            return True
+        if str(skill_result.get("status", "")).strip().lower() == "error":
+            return True
+        result = skill_result.get("result", {})
+        if isinstance(result, dict) and str(result.get("status", "")).strip().lower() == "error":
+            return True
+        return False
+
     def _build_tool_result_message(self, skill_result: dict):
         result_json = json.dumps(skill_result, ensure_ascii=False)
-        message_text = (
-            "The skill server executed your JSON instruction.\n"
-            f"Skill result JSON:\n{result_json}\n\n"
-            "If more tool use is required, return exactly one JSON object."
-            " Otherwise, answer the delegated task in natural language."
-        )
+        if self._skill_result_has_error(skill_result):
+            message_text = (
+                "The skill server returned an error for your JSON instruction.\n"
+                f"Skill result JSON:\n{result_json}\n\n"
+                "If recovery is possible, return exactly one JSON object."
+                " Otherwise, explain the failure clearly."
+                " Do not claim the requested side effect succeeded unless a later tool result confirms success."
+            )
+        else:
+            message_text = (
+                "The skill server executed your JSON instruction.\n"
+                f"Skill result JSON:\n{result_json}\n\n"
+                "If more tool use is required, return exactly one JSON object."
+                " Otherwise, answer the delegated task in natural language."
+            )
         image_parts = self._build_tool_result_image_parts(skill_result)
         if not image_parts:
             return Message(role="user", content=message_text)
@@ -299,6 +328,59 @@ class DelegatedSkillExecutor:
             }
         ]
 
+    def _extract_live_tool_names(self, skill_result: dict) -> set[str]:
+        if self._skill_result_has_error(skill_result):
+            return set()
+        if not isinstance(skill_result, dict):
+            return set()
+
+        result = skill_result.get("result", {})
+        if not isinstance(result, dict):
+            return set()
+        data = result.get("data", {})
+        if not isinstance(data, dict):
+            return set()
+        tools = data.get("tools", [])
+        if not isinstance(tools, list):
+            return set()
+
+        names: set[str] = set()
+        for item in tools:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if name:
+                names.add(name)
+        return names
+
+    def _build_unknown_live_tool_message(
+        self,
+        *,
+        skill_name: str,
+        requested_name: str,
+        live_tool_names: set[str],
+    ) -> str:
+        sorted_names = sorted(live_tool_names)
+        listed_names = ", ".join(sorted_names[:20])
+        if len(sorted_names) > 20:
+            listed_names += ", ..."
+
+        lines = [
+            f"The requested `{skill_name}` tool `{requested_name}` was not present in the last `tools/list` result.",
+            "Do not invent tool names.",
+            "Choose one of the listed live tools instead.",
+        ]
+        if skill_name == "notion-basic":
+            lines.extend(
+                [
+                    "For Notion database URLs, `?v=` is `view_id`, not `database_id`.",
+                    "If you only have a `database_id` and need schema or rows, retrieve the database first and read `data_sources[].id`.",
+                ]
+            )
+        if listed_names:
+            lines.append(f"Listed tools: {listed_names}")
+        return "\n".join(lines)
+
     def _build_system_prompt(self, skill: dict) -> str:
         skill_name = str(skill.get("name", "")).strip() or "unknown-skill"
         skill_content = str(skill.get("content", "")).strip()
@@ -314,6 +396,7 @@ You may use only this one skill and its instructions below.
 - The `skill` field must always stay `{skill_name}`.
 - Never emit the special routing action `__delegate__`.
 - Preserve the delegated task's constraints and requested output.
+- If the delegated task packet marks hints as untrusted, verify them against the live skill/tool schema instead of reusing them blindly.
 - If required information is missing, ask one concise clarifying question.
 - After each tool result, either return another valid JSON object for `{skill_name}` or answer the delegated task in natural language.
 
@@ -327,11 +410,54 @@ You may use only this one skill and its instructions below.
             "task": str(task or "").strip(),
             "context": context or {},
         }
+        note = ""
+        if isinstance(context, dict) and context.get("hints_are_untrusted"):
+            note = (
+                "\nTreat `requested_action`, `requested_args`, and `hinted_skill_call` only as hints."
+                " They may be wrong or malformed."
+                " Rebuild the correct tool plan from the user's objective and the live skill/tool schema.\n"
+            )
+        if skill_name == "notion-basic":
+            note += (
+                "\nNotion reminders:"
+                "\n- In a Notion URL, `?v=` is `view_id`, not `database_id`."
+                "\n- If you need schema or row queries and only have a database URL or `database_id`, retrieve the database first and use `data_sources[].id` as the `data_source_id`."
+                "\n- For `API-post-page`, keep the parent under `database_id` unless the live tool schema explicitly says otherwise.\n"
+            )
         return (
             "Delegated task packet:\n"
             f"{json.dumps(packet, ensure_ascii=False, indent=2)}\n\n"
+            f"{note}"
             "Complete the delegated task using only the allowed skill."
         )
+
+    def _append_auto_context_messages(
+        self,
+        messages: list[Message],
+        *,
+        task: str = "",
+        context: dict | None = None,
+        skill_call: dict | None = None,
+        executed_skills: set[str],
+        debug_context: dict | None = None,
+    ) -> set[str]:
+        auto_messages, updated_executed = collect_auto_context_messages(
+            self.config.skills,
+            task=task,
+            context=context,
+            skill_call=skill_call,
+            executed_skills=executed_skills,
+        )
+        for index, content in enumerate(auto_messages, start=1):
+            messages.append(Message(role="user", content=content))
+            self._log_debug(
+                "delegate_auto_context",
+                debug_context=dict(debug_context or {}),
+                ordinal=index,
+                content=content,
+                skill_call=skill_call,
+            )
+        return updated_executed
 
     def _success(self, *, skill_name: str, task: str, context: dict, final_response: str, tool_calls: int, last_tool_result):
         result = {
@@ -363,12 +489,20 @@ You may use only this one skill and its instructions below.
             "error": message,
         }
 
-    def run(self, *, skill: dict, task: str, context: dict | None = None):
+    def run(self, *, skill: dict, task: str, context: dict | None = None, debug_context=None):
         skill_name = str(skill.get("name", "")).strip()
         if not skill_name:
             return self._error(skill_name="unknown-skill", message="Delegated skill name is missing")
 
         normalized_context = context if isinstance(context, dict) else {"value": context}
+        normalized_debug_context = dict(debug_context or {})
+        self._log_debug(
+            "delegate_start",
+            debug_context=normalized_debug_context,
+            skill_name=skill_name,
+            task=task,
+            context=normalized_context,
+        )
         messages = [
             Message(role="system", content=self._build_system_prompt(skill)),
             Message(
@@ -382,14 +516,39 @@ You may use only this one skill and its instructions below.
         ]
         last_tool_result = None
         last_response = ""
+        auto_context_executed: set[str] = set()
+        live_tool_names: set[str] = set()
+        auto_context_executed = self._append_auto_context_messages(
+            messages,
+            task=task,
+            context=normalized_context,
+            executed_skills=auto_context_executed,
+            debug_context=normalized_debug_context,
+        )
 
         for step in range(self.max_tool_steps + 1):
             try:
                 response = self._chat(messages)
             except Exception as exc:
+                self._log_debug(
+                    "delegate_chat_error",
+                    debug_context=normalized_debug_context,
+                    skill_name=skill_name,
+                    step=step + 1,
+                    error=str(exc),
+                )
                 return self._error(skill_name=skill_name, message=str(exc))
 
-            cleaned_response, _think_blocks = self._extract_think_blocks(response)
+            cleaned_response, think_blocks = self._extract_think_blocks(response)
+            self._log_debug(
+                "delegate_model_response",
+                debug_context=normalized_debug_context,
+                skill_name=skill_name,
+                step=step + 1,
+                raw_response=response,
+                cleaned_response=cleaned_response,
+                think_blocks=think_blocks,
+            )
             visible_response = cleaned_response.strip() or response.strip()
             if not visible_response:
                 visible_response = "[ERROR] Skill specialist returned an empty response"
@@ -399,12 +558,26 @@ You may use only this one skill and its instructions below.
             if not skill_call:
                 if self._looks_like_tool_payload(cleaned_response or response):
                     if step >= self.max_tool_steps:
+                        self._log_debug(
+                            "delegate_tool_loop_error",
+                            debug_context=normalized_debug_context,
+                            skill_name=skill_name,
+                            step=step + 1,
+                            error="Reached maximum tool steps while repairing delegated tool JSON",
+                        )
                         return self._error(
                             skill_name=skill_name,
                             message="Reached maximum tool steps while repairing delegated tool JSON",
                         )
 
                     malformed_response = cleaned_response or response
+                    self._log_debug(
+                        "delegate_malformed_tool_payload",
+                        debug_context=normalized_debug_context,
+                        skill_name=skill_name,
+                        step=step + 1,
+                        response=malformed_response,
+                    )
                     messages.append(Message(role="assistant", content=malformed_response))
                     messages.append(
                         Message(
@@ -417,6 +590,13 @@ You may use only this one skill and its instructions below.
                     )
                     continue
 
+                self._log_debug(
+                    "delegate_final_response",
+                    debug_context=normalized_debug_context,
+                    skill_name=skill_name,
+                    step=step + 1,
+                    response=visible_response,
+                )
                 return self._success(
                     skill_name=skill_name,
                     task=task,
@@ -427,14 +607,64 @@ You may use only this one skill and its instructions below.
                 )
 
             if step >= self.max_tool_steps:
+                self._log_debug(
+                    "delegate_tool_loop_error",
+                    debug_context=normalized_debug_context,
+                    skill_name=skill_name,
+                    step=step + 1,
+                    error="Reached maximum delegated tool steps before final answer",
+                )
                 return self._error(
                     skill_name=skill_name,
                     message="Reached maximum delegated tool steps before final answer",
                 )
 
+            updated_executed = self._append_auto_context_messages(
+                messages,
+                task=task,
+                context=normalized_context,
+                skill_call=skill_call,
+                executed_skills=auto_context_executed,
+                debug_context=normalized_debug_context,
+            )
+            if updated_executed != auto_context_executed:
+                auto_context_executed = updated_executed
+                continue
+
+            requested_live_tool = ""
+            if skill_name == "notion-basic" and skill_call.get("action") in {"tools/call", "call_tool"}:
+                args = skill_call.get("args", {})
+                if isinstance(args, dict):
+                    requested_live_tool = str(args.get("name", "")).strip()
+                if live_tool_names and requested_live_tool and requested_live_tool not in live_tool_names:
+                    rejection_message = self._build_unknown_live_tool_message(
+                        skill_name=skill_name,
+                        requested_name=requested_live_tool,
+                        live_tool_names=live_tool_names,
+                    )
+                    self._log_debug(
+                        "delegate_tool_rejected",
+                        debug_context=normalized_debug_context,
+                        skill_name=skill_name,
+                        step=step + 1,
+                        reason=rejection_message,
+                        skill_call=skill_call,
+                        live_tool_names=sorted(live_tool_names),
+                    )
+                    messages.append(Message(role="assistant", content=json.dumps(skill_call, ensure_ascii=False)))
+                    messages.append(Message(role="user", content=rejection_message))
+                    continue
+
             if skill_call.get("message"):
                 self._print_tool_message(step + 1, skill_call["message"])
             self._print_tool_call(step + 1, skill_call)
+            self._log_debug(
+                "delegate_tool_call",
+                debug_context=normalized_debug_context,
+                skill_name=skill_name,
+                step=step + 1,
+                skill_call=skill_call,
+            )
             messages.append(Message(role="assistant", content=json.dumps(skill_call, ensure_ascii=False)))
 
             try:
@@ -452,9 +682,27 @@ You may use only this one skill and its instructions below.
                 }
 
             last_tool_result = skill_result
+            if skill_name == "notion-basic" and skill_call.get("action") in {"tools/list", "list_tools"}:
+                listed_tool_names = self._extract_live_tool_names(skill_result)
+                if listed_tool_names or not self._skill_result_has_error(skill_result):
+                    live_tool_names = listed_tool_names
             self._print_tool_result(step + 1, skill_result)
+            self._log_debug(
+                "delegate_tool_result",
+                debug_context=normalized_debug_context,
+                skill_name=skill_name,
+                step=step + 1,
+                skill_result=skill_result,
+            )
             messages.append(self._build_tool_result_message(skill_result))
 
+        self._log_debug(
+            "delegate_tool_loop_error",
+            debug_context=normalized_debug_context,
+            skill_name=skill_name,
+            step=self.max_tool_steps + 1,
+            error=f"Delegated skill loop ended unexpectedly. Last response: {last_response}",
+        )
         return self._error(
             skill_name=skill_name,
             message=f"Delegated skill loop ended unexpectedly. Last response: {last_response}",

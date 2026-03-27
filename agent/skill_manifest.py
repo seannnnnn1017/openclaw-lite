@@ -55,9 +55,10 @@ def skill_manifest_notes(skill_name: str) -> list[str]:
             "Localized edits are preferred over full rewrites when possible.",
         ],
         "notion-basic": [
-            "Page targets can fall back to the configured default Notion page.",
-            "`sync_architecture` is live and capped at depth 3 per call.",
-            "Delete actions move content to trash rather than permanently deleting it.",
+            "Primary access now goes through the configured Notion MCP server over HTTP.",
+            "Prefer native MCP actions `tools/list` and `tools/call`; compatibility aliases remain available.",
+            "Use explicit MCP tool arguments rather than old convenience aliases or hidden defaults.",
+            "The bridge handles MCP session setup automatically; do not emit `initialize` or notification methods.",
         ],
         "schedule-task": [
             "Scheduled tasks only run while the agent process is open.",
@@ -73,19 +74,30 @@ def skill_manifest_notes(skill_name: str) -> list[str]:
 
 
 def delegation_preferred(skill_name: str) -> bool:
-    return skill_name not in {"time-query"}
+    return delegation_mode(skill_name) != "direct_ok"
+
+
+def delegation_mode(skill_name: str) -> str:
+    if skill_name == "notion-basic":
+        return "specialist_only"
+    if skill_name == "time-query":
+        return "direct_ok"
+    return "prefer"
 
 
 def build_skill_manifest(skill: dict) -> dict:
     skill_name = str(skill.get("name", "")).strip() or "unknown-skill"
     metadata = skill.get("metadata", {}) or {}
     skill_content = str(skill.get("content", "")).strip()
+    execution_mode = str(skill.get("execution_mode", "invoked")).strip() or "invoked"
+    auto_context = skill.get("auto_context") if isinstance(skill.get("auto_context"), dict) else None
 
     description = _normalize_whitespace(metadata.get("description", ""))
     use_when = extract_intro_paragraph(skill_content)
     actions = extract_supported_actions(skill_content)
     notes = skill_manifest_notes(skill_name)
     prefer_delegate = delegation_preferred(skill_name)
+    delegate_mode = delegation_mode(skill_name)
 
     lines = [f"[SKILL MANIFEST: {skill_name}]"]
     if description:
@@ -96,11 +108,23 @@ def build_skill_manifest(skill: dict) -> dict:
         lines.append(f"Supported actions: {', '.join(actions)}")
     if notes:
         lines.append(f"Notes: {'; '.join(notes)}")
-    lines.append(
-        "Delegation: prefer `__delegate__` so a single-skill specialist can plan concrete actions."
-        if prefer_delegate
-        else "Delegation: direct actions are acceptable when the required arguments are obvious."
-    )
+    if execution_mode == "default":
+        auto_action = str(auto_context.get("action", "")).strip() if auto_context else ""
+        lines.append(
+            "Execution mode: default"
+            + (f"; automatic background action `{auto_action}` may run before answering." if auto_action else "; automatic background execution is enabled.")
+        )
+    else:
+        lines.append("Execution mode: invoked; run this skill only when the task needs it.")
+    if delegate_mode == "specialist_only":
+        lines.append(
+            "Delegation: route this skill through a single-skill specialist before tool execution;"
+            " do not rely on the main agent to guess live tool names or payload schemas."
+        )
+    elif prefer_delegate:
+        lines.append("Delegation: prefer `__delegate__` so a single-skill specialist can plan concrete actions.")
+    else:
+        lines.append("Delegation: direct actions are acceptable when the required arguments are obvious.")
 
     return {
         "name": skill_name,
@@ -109,5 +133,8 @@ def build_skill_manifest(skill: dict) -> dict:
         "supported_actions": actions,
         "notes": notes,
         "delegation_preferred": prefer_delegate,
+        "delegation_mode": delegate_mode,
+        "execution_mode": execution_mode,
+        "auto_context": auto_context,
         "text": "\n".join(lines),
     }
