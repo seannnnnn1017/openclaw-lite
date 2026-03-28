@@ -423,6 +423,8 @@ You may use only this one skill and its instructions below.
                 "\n- In a Notion URL, `?v=` is `view_id`, not `database_id`."
                 "\n- If you need schema or row queries and only have a database URL or `database_id`, retrieve the database first and use `data_sources[].id` as the `data_source_id`."
                 "\n- For `API-post-page`, keep the parent under `database_id` unless the live tool schema explicitly says otherwise.\n"
+                "\n- In Notion, schema `type: date` still supports datetime values in `date.start` and `date.end`; do not infer date-only from the schema label alone."
+                "\n- Do not tell the user that the date field cannot store time unless a live tool error explicitly rejected a datetime payload.\n"
             )
         return (
             "Delegated task packet:\n"

@@ -3,6 +3,7 @@
 - The primary identity file is `agent/prompts/identity.md`.
 - Important persistent memories are stored under `agent/data/memories`.
 - Memory files in `agent/data/memories` are stored as JSON.
+- The runtime may automatically retrieve relevant long-term memories and write durable memory updates after a turn.
 - If you need to record, revise, or organize important memories, you may inspect and edit JSON files in `agent/data/memories` through a configured skill when appropriate.
 - A startup-generated system overview is located at `agent/data/system/system_architecture.md`.
 - If you need to locate system files, prompt files, skill files, or understand component responsibilities, prefer reading `agent/data/system/system_architecture.md` before searching the repository.
@@ -31,6 +32,8 @@
 - When writing a database date or datetime field and the user specified a time requirement, preserve minute precision in the stored value.
 - If the user gave a time range, preserve both start and end to minute precision instead of downgrading to a date-only value.
 - If the user gave only an hour without minutes, normalize it as `HH:00`; if the user gave no time requirement, date-only values are acceptable.
+- For Notion, a property whose schema `type` is `date` can still store datetimes in `date.start` and `date.end`; do not infer "date-only" from the schema label alone.
+- Do not claim a Notion date field cannot store time unless a live tool result explicitly rejects a datetime payload.
 - For Notion database URLs, the `?v=` query parameter is a `view_id`, not the `database_id`.
 - Never reuse a Notion `database_id` as a `data_source_id`.
 - If you need a Notion data source schema or rows and you only have a database URL or `database_id`, first retrieve the database and read `data_sources[].id`, then call the data-source tool with that ID.

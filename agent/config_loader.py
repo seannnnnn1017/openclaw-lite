@@ -21,7 +21,9 @@ class Config:
         self._skill_file_paths = []
         self._secret_file_paths = []
         self._model_override = None
+        self._stream_override = None
         self.default_model = ""
+        self.default_stream = False
         self.skills = []
         self._load()
 
@@ -250,8 +252,24 @@ class Config:
         self.model = self._model_override or self.default_model
         self.temperature = data["llm"]["temperature"]
         self.max_tokens = data["llm"]["max_tokens"]
-        self.stream = bool(data["llm"].get("stream", False))
+        self.default_stream = bool(data["llm"].get("stream", False))
+        if self._stream_override is None:
+            self.stream = self.default_stream
+        else:
+            self.stream = bool(self._stream_override)
         self.skill_server_url = data.get("skill_server", {}).get("base_url", "http://127.0.0.1:8001")
+
+        memory = data.get("memory", {})
+        self.memory_enabled = bool(memory.get("enabled", True))
+        memory_store_path = str(memory.get("store_path", "")).strip() or "data/memories/skill-memory.json"
+        self.memory_store_path = str((self.base_dir / memory_store_path).resolve())
+        self.memory_max_entries = max(10, int(memory.get("max_entries", 200)))
+        self.memory_retrieve_limit = max(0, int(memory.get("retrieve_limit", 6)))
+        self.memory_always_include_limit = max(0, int(memory.get("always_include_limit", 3)))
+        self.memory_extract_after_turn = bool(memory.get("extract_after_turn", True))
+        self.memory_extractor_max_tokens = max(128, int(memory.get("extractor_max_tokens", 600)))
+        self.memory_extractor_model = str(memory.get("extractor_model", "")).strip()
+        self.memory_extractor_no_think = bool(memory.get("extractor_no_think", False))
 
         telegram = data.get("telegram", {})
         self.telegram_enabled = bool(telegram.get("enabled", False))
@@ -318,6 +336,17 @@ class Config:
     def has_runtime_model_override(self) -> bool:
         return bool(self._model_override)
 
+    def set_runtime_stream(self, enabled: bool):
+        self._stream_override = bool(enabled)
+        self.stream = bool(enabled)
+
+    def reset_runtime_stream(self):
+        self._stream_override = None
+        self.stream = self.default_stream
+
+    def has_runtime_stream_override(self) -> bool:
+        return self._stream_override is not None
+
     def save_model(self, model_name: str):
         cleaned = model_name.strip()
         if not cleaned:
@@ -330,4 +359,15 @@ class Config:
             encoding="utf-8",
         )
         self._model_override = None
+        self._load()
+
+    def save_stream(self, enabled: bool):
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data.setdefault("llm", {})
+        data["llm"]["stream"] = bool(enabled)
+        self.path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self._stream_override = None
         self._load()

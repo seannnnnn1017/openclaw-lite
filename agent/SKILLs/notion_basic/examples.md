@@ -62,6 +62,19 @@ Tool JSON:
 ```
 
 User request:
+"Create one schedule row for tomorrow from 15:00 to 17:00 in the built-in calendar"
+
+Step 1 Tool JSON:
+```json
+{"skill":"notion-basic","action":"tools/call","args":{"name":"API-retrieve-a-data-source","arguments":{"data_source_id":"f199688f-e08a-48b5-a0db-f1e4b683dae4"}}}
+```
+
+Step 2 Tool JSON:
+```json
+{"skill":"notion-basic","action":"tools/call","args":{"name":"API-post-page","arguments":{"parent":{"database_id":"dca9bd99-bf81-412b-9978-6996c72c5a37"},"properties":{"標題":{"title":[{"type":"text","text":{"content":"實驗室行程"}}]},"日期":{"date":{"start":"2026-03-28T15:00:00+08:00","end":"2026-03-28T17:00:00+08:00"}},"狀態":{"select":{"name":"未完成"}},"備註":{"rich_text":[{"type":"text","text":{"content":"明天下午三點到五點在實驗室"}}]}}}}}
+```
+
+User request:
 "Update a page property"
 
 Tool JSON:

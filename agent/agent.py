@@ -18,6 +18,11 @@ try:
 except ModuleNotFoundError:
     from agent.core.token_estimator import summarize_prompt_and_history
 
+try:
+    from memory_store import LongTermMemoryManager
+except ModuleNotFoundError:
+    from agent.memory_store import LongTermMemoryManager
+
 
 class SimpleAgent:
     def __init__(self, config, client, display=None, debug_logger=None):
@@ -29,6 +34,12 @@ class SimpleAgent:
         self.history_lock = threading.Lock()
         self.run_lock = threading.RLock()
         self.skill_client = SkillClient(base_url=config.skill_server_url)
+        self.memory_manager = LongTermMemoryManager(
+            config=config,
+            client=client,
+            display=self.display,
+            debug_logger=debug_logger,
+        )
         self.max_tool_steps = 20
 
     def _log_debug(self, kind: str, **payload):
@@ -137,23 +148,27 @@ class SimpleAgent:
     def _print_tool_result(self, step: int, skill_result: dict):
         self.display.tool_result(step, self._summarize_tool_result(skill_result))
 
-    def _truncate_history_text(self, text: str, *, limit: int = 500) -> str:
-        cleaned = " ".join(str(text or "").split())
-        if len(cleaned) <= limit:
-            return cleaned
-        return cleaned[: limit - 3].rstrip() + "..."
-
-    def _build_tool_history_entry(self, *, step: int, kind: str, summary: str) -> str:
-        return f"[TOOL {kind} step={step}] {self._truncate_history_text(summary)}"
+    def _build_tool_history_entry(self, *, step: int, kind: str, payload: dict) -> str:
+        history_event = {
+            "type": f"tool_{str(kind or '').strip().lower()}",
+            "step": step,
+            "payload": payload if isinstance(payload, dict) else {"value": payload},
+        }
+        return json.dumps(history_event, ensure_ascii=False, separators=(",", ":"), default=str)
 
     def _append_history(self, user_input, response: str, *, assistant_events: list[str] | None = None):
         with self.history_lock:
             self.history.append(Message(role="user", content=user_input))
             cleaned_events = [str(event or "").strip() for event in (assistant_events or []) if str(event or "").strip()]
+            assistant_content = str(response or "")
             if cleaned_events:
-                tool_history_message = "[TOOL HISTORY]\n" + "\n".join(cleaned_events)
-                self.history.append(Message(role="assistant", content=tool_history_message))
-            self.history.append(Message(role="assistant", content=response))
+                assistant_content = (
+                    "[TOOL HISTORY JSONL]\n"
+                    + "\n".join(cleaned_events)
+                    + "\n\n[ASSISTANT RESPONSE]\n"
+                    + assistant_content
+                )
+            self.history.append(Message(role="assistant", content=assistant_content))
             if len(self.history) > 10:
                 self.history = self.history[-10:]
 
@@ -181,6 +196,9 @@ class SimpleAgent:
             history_snapshot,
         )
 
+    def long_term_memory_summary(self) -> dict:
+        return self.memory_manager.stats()
+
     def set_show_think(self, enabled: bool):
         self.display.set_enabled("think", enabled)
 
@@ -196,6 +214,12 @@ class SimpleAgent:
             api_key=self.config.api_key,
         )
         self.skill_client = SkillClient(base_url=self.config.skill_server_url)
+        self.memory_manager = LongTermMemoryManager(
+            config=self.config,
+            client=self.client,
+            display=self.display,
+            debug_logger=self.debug_logger,
+        )
 
     def _get_skill_config(self, skill_name: str) -> dict | None:
         if hasattr(self.config, "get_skill"):
@@ -350,14 +374,18 @@ class SimpleAgent:
     def _build_base_messages(self, user_input):
         with self.history_lock:
             history_snapshot = list(self.history)
-        return [
+        messages = [
             Message(
                 role="system",
                 content=self.config.agent_layers.build_system_prompt(),
             ),
-            *history_snapshot,
-            Message(role="user", content=user_input),
         ]
+        memory_message = self.memory_manager.build_memory_message(user_input)
+        if memory_message:
+            messages.append(Message(role="system", content=memory_message))
+        messages.extend(history_snapshot)
+        messages.append(Message(role="user", content=user_input))
+        return messages
 
     def _normalize_skill_call(self, payload, speech_text: str = ""):
         if not isinstance(payload, dict):
@@ -693,6 +721,11 @@ class SimpleAgent:
                         visible_response,
                         assistant_events=turn_history_events,
                     )
+                    self.memory_manager.remember_turn(
+                        user_input=persisted_user_input,
+                        assistant_response=visible_response,
+                        debug_context=normalized_debug_context,
+                    )
                     self._log_debug(
                         "final_response",
                         debug_context=normalized_debug_context,
@@ -734,7 +767,7 @@ class SimpleAgent:
                     self._build_tool_history_entry(
                         step=step + 1,
                         kind="CALL",
-                        summary=self._summarize_tool_call(skill_call),
+                        payload=skill_call,
                     )
                 )
                 self._log_debug(
@@ -801,7 +834,7 @@ class SimpleAgent:
                     self._build_tool_history_entry(
                         step=step + 1,
                         kind="RESULT",
-                        summary=self._summarize_tool_result(skill_result),
+                        payload=skill_result,
                     )
                 )
                 self._log_debug(
@@ -816,6 +849,11 @@ class SimpleAgent:
                 persisted_user_input,
                 last_response,
                 assistant_events=turn_history_events,
+            )
+            self.memory_manager.remember_turn(
+                user_input=persisted_user_input,
+                assistant_response=last_response,
+                debug_context=normalized_debug_context,
             )
             self._log_debug(
                 "final_response",

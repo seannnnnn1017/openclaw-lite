@@ -54,6 +54,14 @@ def format_saved_telegram_images(images: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def format_telegram_memory_event(event: dict) -> str:
+    if str(event.get("category", "")).strip() != "memory":
+        return ""
+    rendered = str(event.get("rendered", "")).strip()
+    text = str(event.get("text", "")).strip()
+    return rendered or (f"[MEMORY] {text}" if text else "")
+
+
 def looks_like_tool_payload(text: str) -> bool:
     stripped = str(text or "").lstrip()
     if not stripped:
@@ -306,6 +314,9 @@ def format_telegram_tool_event(event: dict) -> dict | None:
         "details": rendered or text or summary,
         "kind": kind,
         "status": status,
+        "step": step,
+        "skill": skill,
+        "action": action,
         "key": "|".join([step or "-", skill or "-", action or "-"]),
     }
 

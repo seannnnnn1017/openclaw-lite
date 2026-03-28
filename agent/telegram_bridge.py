@@ -1,6 +1,7 @@
 import json
 import mimetypes
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib import error, parse, request
@@ -18,6 +19,40 @@ IMAGE_FILE_EXTENSIONS = {
     ".tiff",
     ".webp",
 }
+
+
+class TelegramTypingSession:
+    def __init__(self, bridge, *, chat_id: int, action: str = "typing", refresh_seconds: float = 4.0):
+        self.bridge = bridge
+        self.chat_id = int(chat_id)
+        self.action = str(action or "typing").strip() or "typing"
+        self.refresh_seconds = max(float(refresh_seconds or 4.0), 1.0)
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self.bridge.send_chat_action(self.chat_id, action=self.action)
+        self._thread = threading.Thread(
+            target=self._loop,
+            name=f"telegram-typing-{self.chat_id}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+    def _loop(self):
+        while not self._stop_event.wait(self.refresh_seconds):
+            try:
+                self.bridge.send_chat_action(self.chat_id, action=self.action)
+            except Exception:
+                continue
 
 
 class TelegramBridge:
@@ -60,6 +95,8 @@ class TelegramBridge:
         self._offset = None
         self._state_lock = threading.Lock()
         self._known_chats: dict[int, str] = {}
+        self._worker_lock = threading.Lock()
+        self._worker_threads: set[threading.Thread] = set()
 
     def enabled(self) -> bool:
         return bool(self.bot_token)
@@ -89,6 +126,11 @@ class TelegramBridge:
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2)
+        with self._worker_lock:
+            workers = list(self._worker_threads)
+        for worker in workers:
+            if worker.is_alive():
+                worker.join(timeout=1)
 
     def _api_url(self, method: str) -> str:
         return f"https://api.telegram.org/bot{self.bot_token}/{method}"
@@ -131,6 +173,31 @@ class TelegramBridge:
             raise RuntimeError(f"Telegram HTTP {exc.code}: {detail}") from exc
         except error.URLError as exc:
             raise RuntimeError(f"Telegram unavailable: {exc.reason}") from exc
+
+    def send_chat_action(self, chat_id: int, *, action: str = "typing"):
+        self._api_call(
+            "sendChatAction",
+            {
+                "chat_id": int(chat_id),
+                "action": str(action or "typing").strip() or "typing",
+            },
+        )
+
+    def start_typing_session(
+        self,
+        chat_id: int,
+        *,
+        action: str = "typing",
+        refresh_seconds: float = 0.5,
+    ) -> TelegramTypingSession:
+        session = TelegramTypingSession(
+            self,
+            chat_id=int(chat_id),
+            action=action,
+            refresh_seconds=refresh_seconds,
+        )
+        session.start()
+        return session
 
     def _load_state(self):
         with self._state_lock:
@@ -580,9 +647,35 @@ class TelegramBridge:
             "images": images,
             "message_id": message.get("message_id"),
         }
-        reply = self.handle_message(event)
-        if reply:
-            self.send_text(int(chat_id), reply)
+        self._spawn_message_worker(event)
+
+    def _spawn_message_worker(self, event: dict):
+        chat_id = int(event.get("chat_id"))
+
+        def worker():
+            try:
+                reply = self.handle_message(dict(event))
+                if reply:
+                    self.send_text(chat_id, reply)
+            except Exception as exc:
+                self.display.system(f"Telegram message worker error chat={chat_id}: {exc}")
+                try:
+                    self.send_text(chat_id, f"[ERROR] {exc}")
+                except Exception:
+                    pass
+            finally:
+                current = threading.current_thread()
+                with self._worker_lock:
+                    self._worker_threads.discard(current)
+
+        thread = threading.Thread(
+            target=worker,
+            name=f"telegram-message-{chat_id}",
+            daemon=True,
+        )
+        with self._worker_lock:
+            self._worker_threads.add(thread)
+        thread.start()
 
     def _loop(self):
         while not self._stop_event.is_set():

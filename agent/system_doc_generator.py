@@ -28,6 +28,7 @@ CORE_COMPONENTS = [
     "agent/app/tasks.py: scheduled-task lookup, formatting, inline-action markup, and edit application",
     "agent/app/telegram_runtime.py + agent/app/telegram_support.py: Telegram session routing, tool-progress relays, rolling replies, and image prompt assembly",
     "agent/agent.py + agent/delegated_skill_executor.py + agent/core/token_estimator.py: main-agent reasoning loop, delegated single-skill execution, per-session history, and token estimation",
+    "agent/memory_store.py: structured long-term memory retrieval, writeback, and on-disk storage",
     "agent/config_loader.py: loads config, prompts, enabled skills, and runtime model overrides",
     "agent/skill_server.py + agent/skill_runtime.py: skill request dispatch and tool loading",
     "agent/schedule_runtime.py + agent/chat_scheduler.py: schedule registry, due-task polling, result recording",
@@ -186,6 +187,7 @@ def generate_system_architecture(config) -> Path:
     ]
     telegram_state_rel = _relative_path(Path(config.telegram_state_path), project_root)
     telegram_image_storage_rel = _relative_path(Path(config.telegram_image_storage_path), project_root)
+    memory_store_rel = _relative_path(Path(config.memory_store_path), project_root)
     enabled_skill_names = [skill.get("name", "") for skill in config.skills]
 
     snapshot_lines = [
@@ -193,6 +195,9 @@ def generate_system_architecture(config) -> Path:
         f"Active model: `{config.model}`",
         f"LLM base URL: `{config.base_url}`",
         f"Skill server URL: `{config.skill_server_url}`",
+        f"Long-term memory: {'enabled' if config.memory_enabled else 'disabled'}",
+        f"Long-term memory store: `{memory_store_rel}`",
+        f"Memory extractor model: `{config.memory_extractor_model or config.model}` (no_think={'yes' if config.memory_extractor_no_think else 'no'})",
         f"Telegram bridge enabled: {'yes' if config.telegram_enabled else 'no'}",
         f"Telegram polling: timeout={config.telegram_poll_timeout_seconds}s, retry_delay={config.telegram_retry_delay_seconds}s, skip_pending_on_start={'yes' if config.telegram_skip_pending_updates_on_start else 'no'}",
         f"Telegram image storage: `{telegram_image_storage_rel}`",
@@ -204,6 +209,8 @@ def generate_system_architecture(config) -> Path:
         "Terminal uses one shared `SimpleAgent` instance.",
         "Telegram keeps one `SimpleAgent` per `chat_id` inside `TelegramRuntime`.",
         "History is in-memory and separated by session.",
+        "Relevant long-term memories are re-injected into the prompt each turn from the JSON memory store.",
+        "After terminal and Telegram turns, durable facts and preferences can be written back into long-term memory.",
         "Delegated skill specialists are short-lived and do not inherit full chat history.",
         "Tool loop limit: `SimpleAgent.max_tool_steps = 20`.",
     ]
@@ -224,7 +231,8 @@ def generate_system_architecture(config) -> Path:
         f"`{telegram_state_rel}`: Telegram offset + known chats",
         f"`{telegram_image_storage_rel}/`: downloaded Telegram image files",
         f"`{_relative_path(agent_root / 'SKILLs/schedule_task/scripts/temporary_data/task_registry.json', project_root)}`: schedule registry",
-        f"`{_relative_path(agent_root / 'data/memories', project_root)}/`: persistent memory store",
+        f"`{memory_store_rel}`: structured long-term memory store",
+        f"`{_relative_path(agent_root / 'data/memories', project_root)}/`: persistent memory directory",
         f"`{_relative_path(output_path, project_root)}`: this generated system map",
     ]
 
@@ -250,6 +258,7 @@ def generate_system_architecture(config) -> Path:
         "`/task ...` commands manipulate the schedule registry directly and do not require the LLM.",
         "`/clear cache` only deletes `.codex-temp` directories.",
         "`schedule-task` is agent-native; tasks stop when the agent process stops.",
+        "Long-term memory writeback is best-effort; extraction failures are logged but do not abort the main reply.",
         "Notion work now goes only through the live Notion MCP tool catalog.",
         "Secrets should stay in `agent/data/system/secrets.local.json` or environment variables.",
     ]

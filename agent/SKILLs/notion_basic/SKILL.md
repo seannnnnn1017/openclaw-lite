@@ -85,11 +85,15 @@ Write rules:
 
 Date and time rules:
 - When the user specified a time, keep minute precision in the stored value.
+- In Notion schema, `type: date` does not mean "date-only". It can still store ISO datetimes in `date.start` and `date.end`.
 - For a Notion date property, prefer an ISO datetime string in `date.start`, for example `2026-03-28T10:00:00+08:00`, unless the live tool result proves that only date-only input is accepted.
 - If the user gave a time range and the destination property supports it, preserve both `start` and `end`.
 - If the user gave only an hour, normalize it to `HH:00`.
+- Do not downgrade to date-only just because the schema says `type: date`.
+- If an existing row or tool result shows a timestamp in `date.start` or exposes `date.end`, treat that as proof that the property supports time and ranges.
 - Downgrade to date-only only after the live schema or tool result makes that necessary.
 - If you must downgrade because the destination truly cannot store time, keep the date in the property, put the missing time detail into another compatible field such as notes, and mention the limitation in the final answer.
+- Do not tell the user that "Notion date fields do not support time" unless a live tool error explicitly rejected a datetime payload.
 
 Failure recovery rules:
 - If a tool result returns an error, inspect that error and change the next payload accordingly.
@@ -121,6 +125,7 @@ Create one row in the built-in schedule database:
 3. Put row parent under `parent.database_id`
 4. Use exact schema property names
 5. If the user gave a time, store it with minute precision in the date property if the live tool accepts it
+6. If the user gave a start and end time, write both into `date.start` and `date.end` instead of moving the time range into notes
 
 Minimal calendar-task rule:
 - For calendar-style tasks targeting the built-in schedule database, the normal path is not `tools/list -> search -> search -> search`.

@@ -10,6 +10,7 @@ class TerminalDisplay:
         self._enabled = {
             "think": True,
             "tool": True,
+            "memory": True,
             "system": True,
         }
 
@@ -119,6 +120,9 @@ class TerminalDisplay:
 
     def tool_result(self, step: int, text: str):
         self._emit("[TOOL]", f"step={step} result: {text}", category="tool", trailing_blank=True)
+
+    def memory(self, text: str):
+        self._emit("[MEMORY]", text, category="memory")
 
     def system(self, text: str, *, notify: bool = True):
         self._emit("[SYSTEM]", text, category="system", notify=notify)

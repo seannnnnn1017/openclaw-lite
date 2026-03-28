@@ -19,6 +19,9 @@ HELP_TEXT = """Available commands:
 /model [name]              Show the current model or switch it for this session
   reset                    Reset the active model to the config default
   save <name>              Save a new default model to config and use it immediately
+/stream [on|off]           Show LLM streaming status or toggle it for this session
+  reset                    Reset LLM streaming to the config default
+  save <on|off>            Save a new default LLM streaming setting to config
 /clear <history|cache>     Clear in-memory history or cache directories
   history                  Clear in-memory chat history for this session
   cache                    Delete .codex-temp cache directories only
@@ -44,6 +47,13 @@ THINK_HELP_TEXT = """Think commands:
   on                       Show [THINK n] output
   off                      Hide [THINK n] output"""
 
+STREAM_HELP_TEXT = """Stream commands:
+/stream [on|off]           Show the current LLM streaming setting or toggle it
+  on                       Enable LLM streaming for this session
+  off                      Disable LLM streaming for this session
+  reset                    Reset LLM streaming to the config default
+  save <on|off>            Save a new default streaming setting to config"""
+
 
 def _response(message: str = "", *, handled: bool = True, exit_requested: bool = False) -> dict:
     return {
@@ -59,21 +69,49 @@ def describe_model(config) -> str:
     return f"{config.model} (config default)"
 
 
+def describe_stream(config) -> str:
+    current = "on" if getattr(config, "stream", False) else "off"
+    default = "on" if getattr(config, "default_stream", False) else "off"
+    if config.has_runtime_stream_override():
+        return f"{current} (session override, config default: {default})"
+    return f"{current} (config default)"
+
+
+def parse_stream_value(raw_value: str):
+    value = str(raw_value or "").strip().casefold()
+    if value in {"on", "true", "1", "yes"}:
+        return True
+    if value in {"off", "false", "0", "no"}:
+        return False
+    return None
+
+
 def format_status(config, agent) -> str:
     display_states = [
         f"think={'on' if agent.display_category_enabled('think') else 'off'}",
         f"tool={'on' if agent.display_category_enabled('tool') else 'off'}",
+        f"memory={'on' if agent.display_category_enabled('memory') else 'off'}",
         f"system={'on' if agent.display_category_enabled('system') else 'off'}",
     ]
     token_summary = agent.token_estimate_summary()
+    memory_summary = agent.long_term_memory_summary()
+    if memory_summary.get("enabled"):
+        memory_line = (
+            "Long-term memory: enabled "
+            f"({memory_summary.get('count', 0)} stored, "
+            f"{memory_summary.get('always_include', 0)} pinned)"
+        )
+    else:
+        memory_line = "Long-term memory: disabled"
     return "\n".join(
         [
             f"Model: {describe_model(config)}",
             f"History messages: {agent.history_size()}",
+            memory_line,
             f"System prompt tokens ({token_summary['method']}): {token_summary['system_prompt_tokens']}",
             f"History tokens ({token_summary['method']}): {token_summary['history_tokens']}",
             f"Base prompt total ({token_summary['method']}, no current user turn): {token_summary['base_total_tokens']}",
-            f"LLM streaming: {'enabled' if getattr(config, 'stream', False) else 'disabled'}",
+            f"LLM streaming: {describe_stream(config)}",
             f"Display categories: {', '.join(display_states)}",
             f"Skill server: {config.skill_server_url}",
             f"LLM base URL: {config.base_url}",
@@ -262,5 +300,32 @@ def handle_cli_command(
             return _response("Usage: /model <name>")
         config.set_runtime_model(model_name)
         return _response(f"Active model changed for this session: {describe_model(config)}")
+
+    if command == "/stream":
+        if not args:
+            return _response(f"Current LLM streaming: {describe_stream(config)}")
+
+        subcommand = args[0].lower()
+        if subcommand in {"reset", "default"} and len(args) == 1:
+            config.reset_runtime_stream()
+            return _response(f"LLM streaming reset to config default: {describe_stream(config)}")
+
+        if subcommand == "save":
+            if len(args) != 2:
+                return _response(f"Usage: /stream save <on|off>\n\n{STREAM_HELP_TEXT}")
+            enabled = parse_stream_value(args[1])
+            if enabled is None:
+                return _response(f"Usage: /stream save <on|off>\n\n{STREAM_HELP_TEXT}")
+            config.save_stream(enabled)
+            agent.refresh_runtime_clients()
+            return _response(f"Saved and activated LLM streaming: {describe_stream(config)}")
+
+        if len(args) != 1:
+            return _response(STREAM_HELP_TEXT)
+        enabled = parse_stream_value(args[0])
+        if enabled is None:
+            return _response(STREAM_HELP_TEXT)
+        config.set_runtime_stream(enabled)
+        return _response(f"Active LLM streaming changed for this session: {describe_stream(config)}")
 
     return _response(f"Unknown command: {command}\n\n{HELP_TEXT}")

@@ -1,0 +1,185 @@
+{
+  "version": 1,
+  "next_id": 8,
+  "updated_at": "2026-03-28T22:14:14+08:00",
+  "memories": [
+    {
+      "id": "mem-000001",
+      "merge_key": "user_timezone_availability",
+      "kind": "constraint",
+      "title": "台北時間工作時段",
+      "summary": "用戶的時間設定 一律使用台北時間",
+      "details": "此為持續性時區與可用性約束，影響排程與溝通時機",
+      "tags": [
+        "timezone",
+        "availability",
+        "taipei"
+      ],
+      "importance": "medium",
+      "always_include": true,
+      "created_at": "2026-03-28T21:22:10+08:00",
+      "updated_at": "2026-03-28T21:22:10+08:00",
+      "last_recalled_at": "2026-03-28T22:07:15+08:00",
+      "source": {
+        "type": "conversation",
+        "channel": "telegram",
+        "captured_at": "2026-03-28T21:22:10+08:00",
+        "user_excerpt": "嘿 別忘了是台北時間的下午1:50-3:00"
+      }
+    },
+    {
+      "id": "mem-000002",
+      "merge_key": "assistant_identity_max",
+      "kind": "identity",
+      "title": "助手Max身份與功能",
+      "summary": "助手Max在Supervisor模式下的核心能力與工具使用習慣",
+      "details": "主要功能包含基礎對話指令理解、資訊整理、檔案操作與系統配置管理。日曆與排程統一使用Notion頁面管理。",
+      "tags": [
+        "assistant",
+        "identity",
+        "capabilities"
+      ],
+      "importance": "medium",
+      "always_include": true,
+      "created_at": "2026-03-28T21:48:45+08:00",
+      "updated_at": "2026-03-28T21:48:45+08:00",
+      "last_recalled_at": "2026-03-28T22:13:20+08:00",
+      "source": {
+        "type": "conversation",
+        "channel": "telegram",
+        "captured_at": "2026-03-28T21:48:45+08:00",
+        "user_excerpt": "自我介紹一下"
+      }
+    },
+    {
+      "id": "mem-000003",
+      "merge_key": "itinerary_query_preference",
+      "kind": "preference",
+      "title": "行程查詢方式偏好",
+      "summary": "行程查詢時直接讀取所有行程數據，避免使用嚴格篩選器造成遺漏",
+      "details": "用戶希望未來行程查詢邏輯改為全量讀取，而非依賴篩選器過濾",
+      "tags": [
+        "行程",
+        "查詢",
+        "偏好"
+      ],
+      "importance": "medium",
+      "always_include": false,
+      "created_at": "2026-03-28T21:57:30+08:00",
+      "updated_at": "2026-03-28T21:57:30+08:00",
+      "last_recalled_at": "",
+      "source": {
+        "type": "conversation",
+        "channel": "telegram",
+        "captured_at": "2026-03-28T21:57:30+08:00",
+        "user_excerpt": "以後行程查詢直接讀所有行程以避免使用篩選器過於嚴格",
+        "explicit_memory_pass": true
+      }
+    },
+    {
+      "id": "mem-000004",
+      "merge_key": "itinerary_query_default",
+      "kind": "workflow",
+      "title": "行程查詢默認行為",
+      "summary": "直接讀取所有行程數據，避免使用嚴格篩選器造成遺漏",
+      "details": "未來所有行程查詢請求將採用全量讀取策略，不再依賴過度嚴格的篩選條件",
+      "tags": [
+        "行程",
+        "查詢",
+        "工作流程",
+        "explicit-memory"
+      ],
+      "importance": "medium",
+      "always_include": true,
+      "created_at": "2026-03-28T21:57:30+08:00",
+      "updated_at": "2026-03-28T21:57:30+08:00",
+      "last_recalled_at": "2026-03-28T22:13:20+08:00",
+      "source": {
+        "type": "conversation",
+        "channel": "telegram",
+        "captured_at": "2026-03-28T21:57:30+08:00",
+        "user_excerpt": "以後行程查詢直接讀所有行程以避免使用篩選器過於嚴格",
+        "explicit_memory_pass": true
+      }
+    },
+    {
+      "id": "mem-000005",
+      "merge_key": "language_response_preference",
+      "kind": "preference",
+      "title": "語言回應偏好",
+      "summary": "依用戶輸入語言自動切換繁體中文或英文回應",
+      "details": "若用戶使用中文輸入則以繁體中文回復，若使用英文輸入則以英文回復",
+      "tags": [
+        "communication",
+        "explicit-memory",
+        "language",
+        "溝通習慣",
+        "語言",
+        "預設行為"
+      ],
+      "importance": "medium",
+      "always_include": true,
+      "created_at": "2026-03-28T22:07:35+08:00",
+      "updated_at": "2026-03-28T22:07:35+08:00",
+      "last_recalled_at": "2026-03-28T22:13:20+08:00",
+      "source": {
+        "type": "conversation",
+        "channel": "terminal",
+        "captured_at": "2026-03-28T22:07:35+08:00",
+        "user_excerpt": "以後如果我用中文就用繁體中文回復 如果用英文就用英文回復",
+        "explicit_memory_pass": true
+      }
+    },
+    {
+      "id": "mem-000006",
+      "merge_key": "itinerary_data_source_preference",
+      "kind": "preference",
+      "title": "行程資料來源偏好",
+      "summary": "所有行程與日曆相關任務統一使用 Notion 資料庫管理",
+      "details": "預設日曆 ID: 3305aafd-db3b-812a-bec0-de994cfbd764。不啟用系統排程器，後續新增、查詢或修改行程均直接操作 Notion 頁面",
+      "tags": [
+        "itinerary",
+        "notion",
+        "calendar"
+      ],
+      "importance": "high",
+      "always_include": true,
+      "created_at": "2026-03-28T22:14:14+08:00",
+      "updated_at": "2026-03-28T22:14:14+08:00",
+      "last_recalled_at": "",
+      "source": {
+        "type": "conversation",
+        "channel": "terminal",
+        "captured_at": "2026-03-28T22:14:14+08:00",
+        "user_excerpt": "如果是行程相關任務一律使用notion 裡面的日曆database",
+        "explicit_memory_pass": true
+      }
+    },
+    {
+      "id": "mem-000007",
+      "merge_key": "itinerary_tool_preference",
+      "kind": "preference",
+      "title": "行程工具偏好",
+      "summary": "所有行程相關任務一律使用 Notion 日曆資料庫管理",
+      "details": "預設日曆 ID:3305aafd-db3b-812a-bec0-de994cfbd764，不啟用系統排程器，後續新增/查詢/修改均直接操作 Notion 頁面",
+      "tags": [
+        "itinerary",
+        "notion",
+        "calendar",
+        "explicit-memory"
+      ],
+      "importance": "high",
+      "always_include": true,
+      "created_at": "2026-03-28T22:14:14+08:00",
+      "updated_at": "2026-03-28T22:14:14+08:00",
+      "last_recalled_at": "",
+      "source": {
+        "type": "conversation",
+        "channel": "terminal",
+        "captured_at": "2026-03-28T22:14:14+08:00",
+        "user_excerpt": "如果是行程相關任務一律使用notion 裡面的日曆database",
+        "explicit_memory_pass": true
+      }
+    }
+  ]
+}
