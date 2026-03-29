@@ -4,11 +4,11 @@ import threading
 from collections.abc import Callable
 
 try:
-    from schedule_runtime import delete_task, list_tasks
-    from telegram_bridge import TelegramBridge
+    from scheduling.runtime import delete_task, list_tasks
+    from telegram.bridge import TelegramBridge
 except ModuleNotFoundError:
-    from agent.schedule_runtime import delete_task, list_tasks
-    from agent.telegram_bridge import TelegramBridge
+    from agent.scheduling.runtime import delete_task, list_tasks
+    from agent.telegram.bridge import TelegramBridge
 
 from .tasks import (
     apply_task_edit,

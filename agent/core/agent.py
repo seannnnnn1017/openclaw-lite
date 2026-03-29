@@ -6,22 +6,24 @@ import re
 import threading
 from pathlib import Path
 
-from auto_skill_context import collect_auto_context_messages
-from delegated_skill_executor import DelegatedSkillExecutor
-from lmstudio_client import LMStudioClient
-from schemas import Message, ChatRequest
-from skill_client import SkillClient
-from terminal_display import TerminalDisplay
-
 try:
+    from skill.auto_context import collect_auto_context_messages
+    from skill.delegated_executor import DelegatedSkillExecutor
+    from integrations.lmstudio import LMStudioClient
+    from core.schemas import Message, ChatRequest
+    from skill.client import SkillClient
+    from utils.terminal_display import TerminalDisplay
     from core.token_estimator import summarize_prompt_and_history
-except ModuleNotFoundError:
+    from storage.memory import LongTermMemoryManager
+except ImportError:
+    from agent.skill.auto_context import collect_auto_context_messages
+    from agent.skill.delegated_executor import DelegatedSkillExecutor
+    from agent.integrations.lmstudio import LMStudioClient
+    from agent.core.schemas import Message, ChatRequest
+    from agent.skill.client import SkillClient
+    from agent.utils.terminal_display import TerminalDisplay
     from agent.core.token_estimator import summarize_prompt_and_history
-
-try:
-    from memory_store import LongTermMemoryManager
-except ModuleNotFoundError:
-    from agent.memory_store import LongTermMemoryManager
+    from agent.storage.memory import LongTermMemoryManager
 
 
 class SimpleAgent:
@@ -114,7 +116,7 @@ class SimpleAgent:
         if isinstance(result, dict):
             path = result.get("path")
             message = result.get("message")
-            data = result.get("data")
+            data = result.get("data", {})
 
             if path:
                 parts.append(f"path={path}")

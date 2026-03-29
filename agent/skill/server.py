@@ -5,8 +5,12 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from config_loader import Config
-from skill_runtime import SkillRuntime
+try:
+    from cfg.loader import Config
+    from skill.runtime import SkillRuntime
+except ImportError:
+    from agent.cfg.loader import Config
+    from agent.skill.runtime import SkillRuntime
 
 
 class SkillExecuteRequest(BaseModel):
@@ -30,7 +34,7 @@ def create_app():
         )
 
     app = FastAPI(title="OpenClaw Skill Server")
-    config_path = Path(__file__).resolve().parent / "config" / "config.json"
+    config_path = Path(__file__).resolve().parent.parent / "config" / "config.json"
     config = Config(str(config_path))
 
     def runtime() -> SkillRuntime:
@@ -89,4 +93,4 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("skill_server:app", host="127.0.0.1", port=8001, reload=False)
+    uvicorn.run("skill.server:app", host="127.0.0.1", port=8001, reload=False)

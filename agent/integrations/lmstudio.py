@@ -1,6 +1,9 @@
 from openai import OpenAI
 
-from schemas import ChatRequest
+try:
+    from core.schemas import ChatRequest
+except ImportError:
+    from agent.core.schemas import ChatRequest
 
 
 class LMStudioClient:

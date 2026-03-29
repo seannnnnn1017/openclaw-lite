@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /e/重要文件/openclaw-lite -not -path */.* -not -path */__pycache__* -type d)"
+    ]
+  }
+}

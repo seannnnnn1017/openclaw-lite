@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 
 try:
-    from schedule_runtime import create_task
+    from scheduling.runtime import create_task
 except ModuleNotFoundError:
-    from agent.schedule_runtime import create_task
+    from agent.scheduling.runtime import create_task
 
 
 EDITABLE_TASK_FIELDS = {"start_time", "start_date", "task_prompt"}

@@ -5,8 +5,12 @@ import mimetypes
 import re
 from pathlib import Path
 
-from auto_skill_context import collect_auto_context_messages
-from schemas import ChatRequest, Message
+try:
+    from skill.auto_context import collect_auto_context_messages
+    from core.schemas import ChatRequest, Message
+except ImportError:
+    from agent.skill.auto_context import collect_auto_context_messages
+    from agent.core.schemas import ChatRequest, Message
 
 
 class DelegatedSkillExecutor:

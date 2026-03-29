@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "next_id": 8,
-  "updated_at": "2026-03-28T22:14:14+08:00",
+  "next_id": 9,
+  "updated_at": "2026-03-29T10:00:00+08:00",
   "memories": [
     {
       "id": "mem-000001",
@@ -121,7 +121,7 @@
       "always_include": true,
       "created_at": "2026-03-28T22:07:35+08:00",
       "updated_at": "2026-03-28T22:07:35+08:00",
-      "last_recalled_at": "2026-03-28T22:13:20+08:00",
+      "last_recalled_at": "2026-03-28T22:17:35+08:00",
       "source": {
         "type": "conversation",
         "channel": "terminal",
@@ -146,7 +146,7 @@
       "always_include": true,
       "created_at": "2026-03-28T22:14:14+08:00",
       "updated_at": "2026-03-28T22:14:14+08:00",
-      "last_recalled_at": "",
+      "last_recalled_at": "2026-03-29T10:00:00+08:00",
       "source": {
         "type": "conversation",
         "channel": "terminal",
@@ -172,12 +172,38 @@
       "always_include": true,
       "created_at": "2026-03-28T22:14:14+08:00",
       "updated_at": "2026-03-28T22:14:14+08:00",
-      "last_recalled_at": "",
+      "last_recalled_at": "2026-03-29T10:00:00+08:00",
       "source": {
         "type": "conversation",
         "channel": "terminal",
         "captured_at": "2026-03-28T22:14:14+08:00",
         "user_excerpt": "如果是行程相關任務一律使用notion 裡面的日曆database",
+        "explicit_memory_pass": true
+      }
+    },
+    {
+      "id": "mem-000008",
+      "merge_key": "user_identity_name",
+      "kind": "identity",
+      "title": "用戶身份名稱",
+      "summary": "用戶Sean（管理員/admin）的身份識別",
+      "details": "用戶自稱Sean，可被稱為admin或Sean，助手應以適當方式回應",
+      "tags": [
+        "admin",
+        "explicit-memory",
+        "identity",
+        "name"
+      ],
+      "importance": "medium",
+      "always_include": true,
+      "created_at": "2026-03-28T22:17:46+08:00",
+      "updated_at": "2026-03-28T22:17:46+08:00",
+      "last_recalled_at": "2026-03-29T10:00:00+08:00",
+      "source": {
+        "type": "conversation",
+        "channel": "telegram",
+        "captured_at": "2026-03-28T22:17:46+08:00",
+        "user_excerpt": "你好我是你的管理員Sean 你可以叫我admin",
         "explicit_memory_pass": true
       }
     }

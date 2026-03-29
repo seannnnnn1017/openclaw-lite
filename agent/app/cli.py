@@ -6,9 +6,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 try:
-    from schedule_runtime import delete_task, list_tasks
+    from scheduling.runtime import delete_task, list_tasks
 except ModuleNotFoundError:
-    from agent.schedule_runtime import delete_task, list_tasks
+    from agent.scheduling.runtime import delete_task, list_tasks
 
 from .tasks import format_task_list, resolve_task_identifier
 

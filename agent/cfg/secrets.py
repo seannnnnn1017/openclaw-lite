@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 
-AGENT_ROOT = Path(__file__).resolve().parent
+AGENT_ROOT = Path(__file__).resolve().parent.parent
 SYSTEM_DIR = AGENT_ROOT / "data" / "system"
 SECRET_CONFIG_PATH = SYSTEM_DIR / "secrets.local.json"
 SECRET_EXAMPLE_PATH = SYSTEM_DIR / "secrets.example.json"

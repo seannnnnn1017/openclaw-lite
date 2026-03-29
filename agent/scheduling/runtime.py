@@ -10,7 +10,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent / "SKILLs" / "schedule_task" / "scripts"
+SCRIPT_DIR = Path(__file__).resolve().parent.parent / "SKILLs" / "schedule_task" / "scripts"
 TEMP_DIR = SCRIPT_DIR / "temporary_data"
 DEFAULT_REGISTRY_FILE = TEMP_DIR / "task_registry.json"
 REGISTRY_ENV_VAR = "OPENCLAW_SCHEDULE_REGISTRY"

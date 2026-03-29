@@ -4,23 +4,23 @@ import os
 from pathlib import Path
 
 try:
-    from agent import SimpleAgent
-    from chat_scheduler import ChatScheduler
-    from config_loader import Config
-    from debug_session_logger import DebugSessionLogger
-    from lmstudio_client import LMStudioClient
-    from schedule_runtime import record_task_result
-    from system_doc_generator import generate_system_architecture
-    from terminal_display import TerminalDisplay
+    from core.agent import SimpleAgent
+    from scheduling.scheduler import ChatScheduler
+    from cfg.loader import Config
+    from utils.debug_logger import DebugSessionLogger
+    from integrations.lmstudio import LMStudioClient
+    from scheduling.runtime import record_task_result
+    from utils.doc_generator import generate_system_architecture
+    from utils.terminal_display import TerminalDisplay
 except ImportError:
-    from agent.agent import SimpleAgent
-    from agent.chat_scheduler import ChatScheduler
-    from agent.config_loader import Config
-    from agent.debug_session_logger import DebugSessionLogger
-    from agent.lmstudio_client import LMStudioClient
-    from agent.schedule_runtime import record_task_result
-    from agent.system_doc_generator import generate_system_architecture
-    from agent.terminal_display import TerminalDisplay
+    from agent.core.agent import SimpleAgent
+    from agent.scheduling.scheduler import ChatScheduler
+    from agent.cfg.loader import Config
+    from agent.utils.debug_logger import DebugSessionLogger
+    from agent.integrations.lmstudio import LMStudioClient
+    from agent.scheduling.runtime import record_task_result
+    from agent.utils.doc_generator import generate_system_architecture
+    from agent.utils.terminal_display import TerminalDisplay
 
 from .cli import handle_cli_command
 from .tasks import task_action_reply_markup

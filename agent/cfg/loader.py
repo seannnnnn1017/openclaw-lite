@@ -2,14 +2,16 @@ import json
 import os
 from pathlib import Path
 
-from auto_skill_context import normalize_auto_context, normalize_execution_mode
-from schemas import AgentLayers
-from skill_manifest import build_skill_manifest
-
 try:
-    from secret_store import SECRET_CONFIG_PATH, load_secret_config
-except ModuleNotFoundError:
-    from agent.secret_store import SECRET_CONFIG_PATH, load_secret_config
+    from skill.auto_context import normalize_auto_context, normalize_execution_mode
+    from core.schemas import AgentLayers
+    from skill.manifest import build_skill_manifest
+    from cfg.secrets import SECRET_CONFIG_PATH, load_secret_config
+except ImportError:
+    from agent.skill.auto_context import normalize_auto_context, normalize_execution_mode
+    from agent.core.schemas import AgentLayers
+    from agent.skill.manifest import build_skill_manifest
+    from agent.cfg.secrets import SECRET_CONFIG_PATH, load_secret_config
 
 
 class Config:

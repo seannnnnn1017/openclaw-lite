@@ -1,7 +1,10 @@
 import threading
 from collections.abc import Callable
 
-from schedule_runtime import claim_due_tasks
+try:
+    from scheduling.runtime import claim_due_tasks
+except ImportError:
+    from agent.scheduling.runtime import claim_due_tasks
 
 
 class ChatScheduler:

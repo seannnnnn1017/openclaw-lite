@@ -7,9 +7,9 @@ from datetime import datetime
 from pathlib import Path
 
 try:
-    from schemas import ChatRequest, Message
-except ModuleNotFoundError:
-    from agent.schemas import ChatRequest, Message
+    from core.schemas import ChatRequest, Message
+except ImportError:
+    from agent.core.schemas import ChatRequest, Message
 
 
 _MEMORY_LOCK = threading.RLock()

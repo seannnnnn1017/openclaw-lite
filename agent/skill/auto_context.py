@@ -1,7 +1,10 @@
 import json
 import re
 
-from skill_runtime import SkillRuntime
+try:
+    from skill.runtime import SkillRuntime
+except ImportError:
+    from agent.skill.runtime import SkillRuntime
 
 
 def normalize_execution_mode(value) -> str:
