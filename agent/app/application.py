@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 try:
@@ -40,6 +45,8 @@ class AgentApplication:
         self.config = Config(str(resolved_config_path))
         self.display = TerminalDisplay()
         self.debug_logger = DebugSessionLogger(self.agent_root / ".codex-temp" / "debug_sessions")
+        self._skill_server_proc: subprocess.Popen | None = None
+        self._ensure_skill_server()
         self.main_agent = self._build_agent_session()
         self.scheduler = ChatScheduler(on_event=self.on_scheduled_event)
         self.telegram_runtime = TelegramRuntime(
@@ -59,6 +66,71 @@ class AgentApplication:
             skill_count=len(self.config.skills),
             telegram_enabled=self.config.telegram_enabled,
             log_path=str(self.debug_logger.path),
+        )
+
+    def _ensure_skill_server(self, timeout: float = 15.0):
+        """Start the skill server as a subprocess if it is not already running."""
+        url = self.config.skill_server_url.rstrip("/") + "/skills"
+
+        def _is_up() -> bool:
+            try:
+                urllib.request.urlopen(url, timeout=1)
+                return True
+            except Exception:
+                return False
+
+        if _is_up():
+            self.display.system("Skill server already running.")
+            return
+
+        server_script = self.agent_root / "skill" / "server.py"
+        log_path = self.agent_root / ".codex-temp" / "skill_server.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.display.system(f"Starting skill server: {server_script}")
+
+        # Redirect stdout+stderr to a log file so the pipe buffer never fills up.
+        log_file = open(log_path, "w", encoding="utf-8")
+        self._skill_server_proc = subprocess.Popen(
+            [sys.executable, "-u", str(server_script)],
+            cwd=str(self.agent_root),
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
+            env={**os.environ, "PYTHONPATH": str(self.agent_root)},
+        )
+        log_file.close()  # parent doesn't need to hold it; child keeps its own fd
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            # Process died — surface the log for diagnosis.
+            if self._skill_server_proc.poll() is not None:
+                log_tail = ""
+                try:
+                    log_tail = log_path.read_text(encoding="utf-8", errors="replace").strip()[-2000:]
+                except Exception:
+                    pass
+                self.display.error(
+                    f"Skill server process exited (code {self._skill_server_proc.returncode})."
+                    + (f"\n{log_tail}" if log_tail else "")
+                )
+                self._skill_server_proc = None
+                return
+            if _is_up():
+                self.display.system(
+                    f"Skill server ready (pid={self._skill_server_proc.pid}). "
+                    f"Log: {log_path}"
+                )
+                return
+            time.sleep(0.3)
+
+        log_tail = ""
+        try:
+            log_tail = log_path.read_text(encoding="utf-8", errors="replace").strip()[-2000:]
+        except Exception:
+            pass
+        self.display.error(
+            "Skill server did not become ready in time — skill calls may fail."
+            + (f"\n{log_tail}" if log_tail else "")
         )
 
     def _build_agent_session(self) -> SimpleAgent:
@@ -203,3 +275,6 @@ class AgentApplication:
             self.debug_logger.log_event("session_stop")
             self.telegram_runtime.stop()
             self.scheduler.stop()
+            if self._skill_server_proc is not None:
+                self._skill_server_proc.terminate()
+                self._skill_server_proc = None

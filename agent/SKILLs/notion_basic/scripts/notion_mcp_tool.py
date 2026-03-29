@@ -21,9 +21,9 @@ for candidate in (str(PROJECT_ROOT), str(AGENT_ROOT)):
         sys.path.insert(0, candidate)
 
 try:
-    from agent.secret_store import SECRET_CONFIG_PATH, load_secret_config
+    from agent.cfg.secrets import SECRET_CONFIG_PATH, load_secret_config
 except ModuleNotFoundError:
-    from secret_store import SECRET_CONFIG_PATH, load_secret_config
+    from cfg.secrets import SECRET_CONFIG_PATH, load_secret_config
 
 DEFAULT_MCP_BASE_URL = "http://127.0.0.1:3000/mcp"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
