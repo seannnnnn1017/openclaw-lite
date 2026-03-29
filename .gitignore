@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
+agent/.codex-temp/
+agent/data/memories/
+agent/data/system/telegram_bridge_state.json
 agent/data/system/secrets.local.json
 agent/data/system/notion_skill_config.local.json
 agent/data/telegram_media/

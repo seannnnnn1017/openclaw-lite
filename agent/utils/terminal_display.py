@@ -1,22 +1,31 @@
 import sys
 import threading
 from contextlib import contextmanager
+from shutil import get_terminal_size
 
-# ── ANSI codes ────────────────────────────────────────────────────────────────
-_R       = "\033[0m"   # reset
-_BOLD    = "\033[1m"
-_DIM     = "\033[2m"
-_ITALIC  = "\033[3m"
+try:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.formatted_text import ANSI
+    from prompt_toolkit.patch_stdout import patch_stdout
+except ImportError:
+    PromptSession = None
+    ANSI = None
+    patch_stdout = None
 
-_RED     = "\033[31m"
-_GREEN   = "\033[32m"
-_YELLOW  = "\033[33m"
+# ANSI codes
+_R = "\033[0m"
+_BOLD = "\033[1m"
+_DIM = "\033[2m"
+_ITALIC = "\033[3m"
+
+_RED = "\033[31m"
+_YELLOW = "\033[33m"
 _MAGENTA = "\033[35m"
-_CYAN    = "\033[36m"
+_CYAN = "\033[36m"
 
-_GRAY    = "\033[90m"  # bright-black
-_BWHITE  = "\033[97m"  # bright-white
-_BGREEN  = "\033[92m"  # bright-green
+_GRAY = "\033[90m"
+_BWHITE = "\033[97m"
+_BGREEN = "\033[92m"
 
 
 def _enable_windows_ansi() -> bool:
@@ -24,6 +33,7 @@ def _enable_windows_ansi() -> bool:
         return True
     try:
         import ctypes
+
         k32 = ctypes.windll.kernel32
         h = k32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
         mode = ctypes.c_ulong()
@@ -39,6 +49,7 @@ _VT_OK = _enable_windows_ansi()
 
 def _color_supported() -> bool:
     import os
+
     if os.environ.get("NO_COLOR"):
         return False
     if os.environ.get("FORCE_COLOR"):
@@ -46,25 +57,23 @@ def _color_supported() -> bool:
     return _VT_OK and hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
 
 
-# ── label / icon config ───────────────────────────────────────────────────────
-#  Each entry: (icon, label, label_ansi, text_ansi)
 _STYLES: dict[str, tuple[str, str, str, str]] = {
-    "think":     ("◌", "thinking",  _GRAY,    _DIM + _ITALIC),
-    "tool_call": ("⎿", "tool",      _YELLOW,  ""),
-    "tool_note": ("⎿", "tool",      _YELLOW,  _DIM),
-    "tool_res":  ("⎿", "tool",      _YELLOW,  _DIM),
-    "memory":    ("◈", "memory",    _MAGENTA, ""),
-    "system":    ("◆", "system",    _CYAN,    ""),
-    "command":   (">", "command",   _BGREEN,  _BOLD),
-    "assistant": ("◇", "assistant", "",       _BWHITE),
-    "error":     ("✗", "error",     _RED,     _RED),
+    "think": ("~", "thinking", _GRAY, _DIM + _ITALIC),
+    "tool_call": ("|", "tool", _YELLOW, ""),
+    "tool_note": ("|", "tool", _YELLOW, _DIM),
+    "tool_res": ("|", "tool", _YELLOW, _DIM),
+    "memory": ("*", "memory", _MAGENTA, ""),
+    "system": ("#", "system", _CYAN, ""),
+    "command": (">", "command", _BGREEN, _BOLD),
+    "assistant": (":", "assistant", "", _BWHITE),
+    "error": ("!", "error", _RED, _RED),
 }
 
-_LABEL_WIDTH = 9   # characters reserved for the label text
-_INDENT      = "  "
-# visual prefix length:  indent(2) + icon(1) + space(1) + label_width(9) + space(1) = 14
-_PREFIX_LEN  = len(_INDENT) + 1 + 1 + _LABEL_WIDTH + 1
+_LABEL_WIDTH = 9
+_INDENT = "  "
+_PREFIX_LEN = len(_INDENT) + 1 + 1 + _LABEL_WIDTH + 1
 _CONTINUATION = " " * _PREFIX_LEN
+_RULE_CHAR = "="
 
 
 class TerminalDisplay:
@@ -74,18 +83,167 @@ class TerminalDisplay:
         self._captures: dict[int, list[dict]] = {}
         self._color = _color_supported() if color is None else bool(color)
         self._enabled = {
-            "think":  True,
-            "tool":   True,
+            "think": True,
+            "tool": True,
             "memory": True,
             "system": True,
         }
-
-    # ── color helper ──────────────────────────────────────────────────────────
+        self._prompt_active = False
+        self._status_footer_text = ""
+        self._status_footer_visible = False
+        self._waiting_base_text = ""
+        self._spinner_frames = ("-", "\\", "|", "/")
+        self._spinner_index = 0
+        self._spinner_interval = 0.12
+        self._spinner_stop_event: threading.Event | None = None
+        self._spinner_thread: threading.Thread | None = None
+        self._prompt_session = PromptSession() if self._supports_prompt_toolkit() else None
 
     def _c(self, *codes: str) -> str:
         return "".join(codes) if self._color else ""
 
-    # ── public toggles ────────────────────────────────────────────────────────
+    def _supports_tty(self) -> bool:
+        return (
+            hasattr(sys.stdout, "isatty")
+            and hasattr(sys.stdin, "isatty")
+            and sys.stdout.isatty()
+            and sys.stdin.isatty()
+        )
+
+    def _supports_framed_prompt(self) -> bool:
+        return self._supports_tty() and _VT_OK
+
+    def _supports_prompt_toolkit(self) -> bool:
+        return (
+            PromptSession is not None
+            and ANSI is not None
+            and patch_stdout is not None
+            and self._supports_tty()
+        )
+
+    def _terminal_columns(self) -> int:
+        return max(20, get_terminal_size(fallback=(80, 20)).columns)
+
+    def _rule_text(self) -> str:
+        return _RULE_CHAR * self._terminal_columns()
+
+    def _ansi_rule(self) -> str:
+        if self._color:
+            return f"{self._c(_GRAY, _DIM)}{self._rule_text()}{self._c(_R)}"
+        return self._rule_text()
+
+    def _prompt_pt_text(self):
+        if not self._supports_prompt_toolkit():
+            return "> "
+        if self._color:
+            return ANSI(
+                f"{self._c(_GRAY, _DIM)}{self._rule_text()}{self._c(_R)}\n"
+                f"{self._c(_BGREEN, _BOLD)}>{self._c(_R)} "
+            )
+        return f"{self._rule_text()}\n> "
+
+    def _prompt_pt_toolbar(self):
+        return ""
+
+    def _fit_status_line(self, text: str, *, reserve: int = 0) -> str:
+        width = self._terminal_columns()
+        cleaned = str(text or "").replace("\r", " ").replace("\n", " ").strip()
+        available = max(1, width - reserve)
+        if len(cleaned) <= available:
+            return cleaned
+        if available <= 3:
+            return cleaned[:available]
+        return cleaned[: available - 3] + "..."
+
+    def _clear_status_footer_locked(self):
+        if not self._status_footer_visible or not self._supports_framed_prompt():
+            return
+        for _ in range(2):
+            sys.stdout.write("\033[1A\r\033[2K")
+        sys.stdout.write("\r")
+        sys.stdout.flush()
+        self._status_footer_visible = False
+
+    def _render_status_footer_locked(self):
+        if (
+            not self._status_footer_text
+            or not self._supports_framed_prompt()
+            or self._prompt_active
+        ):
+            return
+
+        prompt_prefix = f"{self._c(_BGREEN, _BOLD)}>{self._c(_R)} "
+        status_text = self._fit_status_line(self._status_footer_text, reserve=2)
+        if self._color:
+            status_text = f"{self._c(_CYAN, _BOLD)}{status_text}{self._c(_R)}"
+        sys.stdout.write(
+            f"{self._ansi_rule()}\n"
+            f"{prompt_prefix}{status_text}\n"
+        )
+        sys.stdout.flush()
+        self._status_footer_visible = True
+
+    def _refresh_waiting_frame_locked(self):
+        if not self._waiting_base_text:
+            self._status_footer_text = ""
+            return
+        frame = self._spinner_frames[self._spinner_index % len(self._spinner_frames)]
+        self._spinner_index += 1
+        self._status_footer_text = f"[{frame}] {self._waiting_base_text}"
+
+    def _ensure_spinner_locked(self):
+        if self._spinner_thread and self._spinner_thread.is_alive():
+            return
+
+        stop_event = threading.Event()
+        self._spinner_stop_event = stop_event
+
+        def _run_spinner():
+            while not stop_event.wait(self._spinner_interval):
+                with self._lock:
+                    if stop_event.is_set() or not self._waiting_base_text:
+                        break
+                    self._clear_status_footer_locked()
+                    self._refresh_waiting_frame_locked()
+                    self._render_status_footer_locked()
+
+        self._spinner_thread = threading.Thread(
+            target=_run_spinner,
+            name="terminal-waiting-spinner",
+            daemon=True,
+        )
+        self._spinner_thread.start()
+
+    def set_waiting(self, text: str):
+        with self._lock:
+            waiting_text = str(text or "").strip()
+            if not waiting_text or waiting_text.lower().startswith("ai "):
+                waiting_text = "thinking"
+            self._waiting_base_text = waiting_text
+            self._spinner_index = 0
+            self._clear_status_footer_locked()
+            self._refresh_waiting_frame_locked()
+            self._render_status_footer_locked()
+            self._ensure_spinner_locked()
+
+    def clear_waiting(self):
+        spinner_thread = None
+        with self._lock:
+            if self._spinner_stop_event is not None:
+                self._spinner_stop_event.set()
+            spinner_thread = self._spinner_thread
+            self._spinner_stop_event = None
+            self._spinner_thread = None
+            self._waiting_base_text = ""
+            self._spinner_index = 0
+            self._clear_status_footer_locked()
+            self._status_footer_text = ""
+        if (
+            spinner_thread
+            and spinner_thread.is_alive()
+            and spinner_thread is not threading.current_thread()
+        ):
+            spinner_thread.join(timeout=0.2)
 
     def set_enabled(self, category: str, enabled: bool):
         self._enabled[category] = bool(enabled)
@@ -95,8 +253,6 @@ class TerminalDisplay:
 
     def states(self) -> dict[str, bool]:
         return dict(self._enabled)
-
-    # ── capture context manager ───────────────────────────────────────────────
 
     @contextmanager
     def capture_events(self, *, categories=None, on_event=None):
@@ -141,8 +297,6 @@ class TerminalDisplay:
             except Exception:
                 pass
 
-    # ── core renderer ─────────────────────────────────────────────────────────
-
     def _emit(
         self,
         style_key: str,
@@ -171,7 +325,7 @@ class TerminalDisplay:
         for i, line in enumerate(lines):
             prefix = f"{_INDENT}{styled_label} " if i == 0 else _CONTINUATION
             plain_prefix = f"{_INDENT}{icon} {label.ljust(_LABEL_WIDTH)} " if i == 0 else _CONTINUATION
-            color_on  = self._c(text_ansi) if text_ansi else ""
+            color_on = self._c(text_ansi) if text_ansi else ""
             color_off = R if text_ansi else ""
             rendered_lines.append(f"{prefix}{color_on}{line}{color_off}")
             plain_lines.append(f"{plain_prefix}{line}")
@@ -183,13 +337,13 @@ class TerminalDisplay:
             self._record_event(prefix=label, text=str(text), rendered=plain_rendered, category=category)
 
         with self._lock:
+            self._clear_status_footer_locked()
             if leading_blank:
                 print()
             print(rendered)
             if trailing_blank:
                 print()
-
-    # ── public display methods ────────────────────────────────────────────────
+            self._render_status_footer_locked()
 
     def think(self, step: int, text: str):
         self._emit("think", f"step {step}: {text}", category="think")
@@ -210,8 +364,7 @@ class TerminalDisplay:
         self._emit("system", text, category="system", notify=notify)
 
     def system_block(self, text: str, *, notify: bool = True):
-        self._emit("system", text, category="system",
-                   leading_blank=True, trailing_blank=True, notify=notify)
+        self._emit("system", text, category="system", leading_blank=True, trailing_blank=True, notify=notify)
 
     def command(self, text: str):
         self._emit("command", text, leading_blank=True, trailing_blank=True)
@@ -223,5 +376,40 @@ class TerminalDisplay:
         self._emit("error", text, leading_blank=True, trailing_blank=True)
 
     def prompt(self):
+        if self._supports_prompt_toolkit():
+            return
+
         with self._lock:
-            print(f"{self._c(_BGREEN, _BOLD)}>{self._c(_R)} ", end="", flush=True)
+            prompt_prefix = f"{self._c(_BGREEN, _BOLD)}>{self._c(_R)} "
+            if not self._supports_framed_prompt():
+                print(prompt_prefix, end="", flush=True)
+                return
+
+            border = self._ansi_rule()
+            sys.stdout.write(f"{border}\n{prompt_prefix}")
+            sys.stdout.flush()
+
+    def read_input(self) -> str:
+        if self._supports_prompt_toolkit():
+            with self._lock:
+                self._clear_status_footer_locked()
+                self._prompt_active = True
+            try:
+                with patch_stdout():
+                    return self._prompt_session.prompt(
+                        self._prompt_pt_text,
+                        bottom_toolbar=self._prompt_pt_toolbar,
+                    )
+            finally:
+                with self._lock:
+                    self._prompt_active = False
+                    self._render_status_footer_locked()
+
+        self.prompt()
+        try:
+            return input()
+        finally:
+            if self._supports_framed_prompt():
+                with self._lock:
+                    print()
+                    self._render_status_footer_locked()

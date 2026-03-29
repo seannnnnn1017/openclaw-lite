@@ -246,8 +246,7 @@ class AgentApplication:
 
         try:
             while True:
-                self.display.prompt()
-                user_input = input().strip()
+                user_input = self.display.read_input().strip()
                 if user_input.lower() in {"exit", "quit"}:
                     break
 
@@ -261,13 +260,17 @@ class AgentApplication:
                     continue
 
                 try:
-                    reply = self.main_agent.run(
-                        user_input,
-                        debug_context={
-                            "source": "terminal",
-                            "session": "main",
-                        },
-                    )
+                    self.display.set_waiting("AI 正在回覆中...")
+                    try:
+                        reply = self.main_agent.run(
+                            user_input,
+                            debug_context={
+                                "source": "terminal",
+                                "session": "main",
+                            },
+                        )
+                    finally:
+                        self.display.clear_waiting()
                     self.display.agent(reply)
                 except Exception as exc:
                     self.display.error(str(exc))
