@@ -8,3 +8,28 @@ agent/data/system/notion_skill_config.local.json
 agent/data/telegram_media/
 agent/data/notion_downloads/
 agent/SKILLs/notion_basic/scripts/temporary_data/
+
+# Local settings (Claude Code)
+.claude/settings.local.json
+
+# All *.local.json patterns (catch future local config files)
+*.local.json
+
+# Standard secret / env files
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.secret
+*.secrets
+
+# Backup files
+*.bak
+
+# Dev scratch files
+test_tool.py
+agent/agent/
+
+# Node.js
+node_modules/
