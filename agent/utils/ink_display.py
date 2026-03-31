@@ -95,3 +95,91 @@ class InkDisplay:
         if self._proc is not None:
             self._proc.terminate()
             self._proc = None
+
+    # ------------------------------------------------------------------
+    # Style → category mapping
+    # ------------------------------------------------------------------
+
+    _STYLE_CATEGORY: dict[str, str] = {
+        "think": "think",
+        "tool_call": "tool",
+        "tool_note": "tool",
+        "tool_res": "tool",
+        "memory": "memory",
+        "system": "system",
+    }
+
+    # ------------------------------------------------------------------
+    # Stub for _record_event (replaced in Task 4)
+    # ------------------------------------------------------------------
+
+    def _record_event(self, **_) -> None:
+        pass
+
+    # ------------------------------------------------------------------
+    # Internal emit
+    # ------------------------------------------------------------------
+
+    def _emit(self, style: str, text: str, *, notify: bool = True) -> None:
+        category = self._STYLE_CATEGORY.get(style)
+        if category and not self.is_enabled(category):
+            return
+        if notify and category:
+            self._record_event(style=style, text=str(text), category=category)
+        self._send({"type": "message", "style": style, "text": str(text)})
+
+    # ------------------------------------------------------------------
+    # Display methods (same API as TerminalDisplay)
+    # ------------------------------------------------------------------
+
+    def agent(self, text: str) -> None:
+        self._emit("assistant", text)
+
+    def system(self, text: str, *, notify: bool = True) -> None:
+        self._emit("system", text, notify=notify)
+
+    def system_block(self, text: str, *, notify: bool = True) -> None:
+        self._emit("system", text, notify=notify)
+
+    def command(self, text: str) -> None:
+        self._emit("command", text)
+
+    def error(self, text: str) -> None:
+        self._emit("error", text)
+
+    def think(self, step: int, text: str) -> None:
+        self._emit("think", f"step {step}: {text}")
+
+    def tool_call(self, step: int, text: str) -> None:
+        self._emit("tool_call", f"step={step} call: {text}")
+
+    def tool_note(self, step: int, text: str) -> None:
+        self._emit("tool_note", f"step={step} note: {text}")
+
+    def tool_result(self, step: int, text: str) -> None:
+        self._emit("tool_res", f"step={step} result: {text}")
+
+    def memory(self, text: str) -> None:
+        self._emit("memory", text)
+
+    def set_waiting(self, text: str) -> None:
+        self._send({"type": "set_waiting", "text": str(text or "")})
+
+    def clear_waiting(self) -> None:
+        self._send({"type": "clear_waiting"})
+
+    def prompt(self) -> None:
+        pass  # no-op: Ink always shows the input box
+
+    # ------------------------------------------------------------------
+    # Category enable/disable
+    # ------------------------------------------------------------------
+
+    def set_enabled(self, category: str, enabled: bool) -> None:
+        self._enabled[category] = bool(enabled)
+
+    def is_enabled(self, category: str) -> bool:
+        return self._enabled.get(category, True)
+
+    def states(self) -> dict[str, bool]:
+        return dict(self._enabled)
