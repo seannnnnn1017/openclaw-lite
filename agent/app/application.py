@@ -17,6 +17,7 @@ try:
     from scheduling.runtime import record_task_result
     from utils.doc_generator import generate_system_architecture
     from utils.terminal_display import TerminalDisplay
+    from utils.ink_display import InkDisplay
 except ImportError:
     from agent.core.agent import SimpleAgent
     from agent.scheduling.scheduler import ChatScheduler
@@ -26,6 +27,7 @@ except ImportError:
     from agent.scheduling.runtime import record_task_result
     from agent.utils.doc_generator import generate_system_architecture
     from agent.utils.terminal_display import TerminalDisplay
+    from agent.utils.ink_display import InkDisplay
 
 from .cli import handle_cli_command
 from .tasks import task_action_reply_markup
@@ -43,7 +45,16 @@ class AgentApplication:
             else self.agent_root / "config" / "config.json"
         )
         self.config = Config(str(resolved_config_path))
-        self.display = TerminalDisplay()
+        if InkDisplay.is_available():
+            try:
+                self.display = InkDisplay()
+            except Exception as exc:
+                print(f"[system] Ink UI failed to start ({exc}). Using terminal fallback.")
+                self.display = TerminalDisplay()
+        else:
+            if not (InkDisplay._UI_DIR / "node_modules").is_dir():
+                print("[system] Ink UI not available (run: cd agent/ui && npm install). Using terminal fallback.")
+            self.display = TerminalDisplay()
         self.debug_logger = DebugSessionLogger(self.agent_root / ".codex-temp" / "debug_sessions")
         self._skill_server_proc: subprocess.Popen | None = None
         self._ensure_skill_server()
