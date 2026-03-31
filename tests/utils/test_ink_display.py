@@ -212,3 +212,70 @@ def test_states_returns_all_categories():
     s = d.states()
     assert s["think"] is False
     assert s["tool"] is True
+
+
+# ---------------------------------------------------------------------------
+# capture_events
+# ---------------------------------------------------------------------------
+
+def test_capture_events_records_tool_events():
+    d, _ = _make_display()
+    with d.capture_events(categories={"tool"}) as events:
+        d.tool_call(1, "search_files")
+        d.agent("Hello")  # not a tool event — should not be captured
+    assert len(events) == 1
+    assert events[0]["category"] == "tool"
+    assert "search_files" in events[0]["text"]
+
+
+def test_capture_events_records_all_when_no_filter():
+    d, _ = _make_display()
+    with d.capture_events() as events:
+        d.think(1, "pondering")
+        d.tool_call(1, "search")
+        d.memory("something remembered")
+    assert len(events) == 3
+
+
+def test_capture_events_on_event_callback():
+    d, _ = _make_display()
+    received = []
+    with d.capture_events(categories={"tool"}, on_event=received.append):
+        d.tool_call(1, "x")
+    assert len(received) == 1
+    assert received[0]["category"] == "tool"
+
+
+def test_capture_events_disabled_category_not_captured():
+    d, _ = _make_display()
+    d.set_enabled("think", False)
+    with d.capture_events(categories={"think"}) as events:
+        d.think(1, "suppressed thought")
+    assert events == []
+
+
+def test_capture_events_context_manager_cleans_up():
+    d, _ = _make_display()
+    with d.capture_events() as events:
+        pass
+    tid = threading.get_ident()
+    assert tid not in d._captures
+
+
+# ---------------------------------------------------------------------------
+# read_input
+# ---------------------------------------------------------------------------
+
+def test_read_input_returns_text_from_json():
+    d, _ = _make_display()
+    line = json.dumps({"type": "input", "text": "hello world"}).encode() + b"\n"
+    d._proc.stdout.readline.return_value = line
+    result = d.read_input()
+    assert result == "hello world"
+
+
+def test_read_input_raises_eof_when_process_closes():
+    d, _ = _make_display()
+    d._proc.stdout.readline.return_value = b""
+    with pytest.raises(EOFError):
+        d.read_input()

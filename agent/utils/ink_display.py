@@ -110,11 +110,49 @@ class InkDisplay:
     }
 
     # ------------------------------------------------------------------
-    # Stub for _record_event (replaced in Task 4)
+    # Event capture (used by Telegram runtime)
     # ------------------------------------------------------------------
 
-    def _record_event(self, **_) -> None:
-        pass
+    def _record_event(self, *, style: str, text: str, category: str) -> None:
+        tid = threading.get_ident()
+        with self._capture_lock:
+            captures = list(self._captures.get(tid, []))
+        if not captures:
+            return
+        event = {"prefix": style, "text": text, "rendered": text, "category": category}
+        listeners = []
+        for cap in captures:
+            cats = cap["categories"]
+            if cats and category not in cats:
+                continue
+            cap["events"].append(dict(event))
+            if cap.get("on_event"):
+                listeners.append(cap["on_event"])
+        for fn in listeners:
+            try:
+                fn(dict(event))
+            except Exception:
+                pass
+
+    @contextmanager
+    def capture_events(self, *, categories=None, on_event=None):
+        capture = {
+            "categories": set(categories or []),
+            "events": [],
+            "on_event": on_event,
+        }
+        tid = threading.get_ident()
+        with self._capture_lock:
+            self._captures.setdefault(tid, []).append(capture)
+        try:
+            yield capture["events"]
+        finally:
+            with self._capture_lock:
+                caps = self._captures.get(tid, [])
+                if capture in caps:
+                    caps.remove(capture)
+                if not caps:
+                    self._captures.pop(tid, None)
 
     # ------------------------------------------------------------------
     # Internal emit
@@ -183,3 +221,13 @@ class InkDisplay:
 
     def states(self) -> dict[str, bool]:
         return dict(self._enabled)
+
+    # ------------------------------------------------------------------
+    # User input
+    # ------------------------------------------------------------------
+
+    def read_input(self) -> str:
+        line = self._proc.stdout.readline()
+        if not line:
+            raise EOFError("Ink process closed stdout")
+        return json.loads(line.decode("utf-8").strip())["text"]
