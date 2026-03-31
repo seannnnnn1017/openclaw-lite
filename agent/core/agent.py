@@ -649,6 +649,7 @@ class SimpleAgent:
 
             for step in range(self.max_tool_steps + 1):
                 try:
+                    self.display.set_waiting("thinking")
                     response = self._chat(
                         messages,
                         response_stream_callback=response_stream_callback,
@@ -765,6 +766,7 @@ class SimpleAgent:
                 if skill_call.get("message"):
                     self._print_tool_message(step + 1, skill_call["message"])
                 self._print_tool_call(step + 1, skill_call)
+                self.display.set_waiting(f"tool  {skill_call['skill']} / {skill_call['action']}")
                 turn_history_events.append(
                     self._build_tool_history_entry(
                         step=step + 1,

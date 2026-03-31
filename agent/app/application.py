@@ -271,7 +271,6 @@ class AgentApplication:
                     continue
 
                 try:
-                    self.display.set_waiting("AI 正在回覆中...")
                     try:
                         reply = self.main_agent.run(
                             user_input,

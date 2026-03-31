@@ -52,7 +52,7 @@ class InkDisplay:
             stdin=None,              # inherit: real TTY for keyboard
             stdout=subprocess.PIPE,  # pipe: Python reads user input
             stderr=None,             # inherit: Ink renders UI here
-            env={**os.environ, "OPENCLAW_IPC_PORT": str(port)},
+            env={**os.environ, "OPENCLAW_IPC_PORT": str(port), "FORCE_COLOR": "3"},
         )
 
         # Accept Ink's connection (5s timeout)
