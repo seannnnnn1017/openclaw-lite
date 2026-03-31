@@ -56,7 +56,8 @@ def skill_manifest_notes(skill_name: str) -> list[str]:
         ],
         "notion-basic": [
             "Primary access now goes through the configured Notion MCP server over HTTP.",
-            "Prefer native MCP actions `tools/list` and `tools/call`; compatibility aliases remain available.",
+            "Prefer `delegate_task` for normal user-facing work; use `tools/list` and `tools/call` for explicit low-level MCP work.",
+            "Treat the live `tools/list` result as the source of truth for the full Notion MCP API; compatibility aliases remain available.",
             "Use explicit MCP tool arguments rather than old convenience aliases or hidden defaults.",
             "The bridge handles MCP session setup automatically; do not emit `initialize` or notification methods.",
         ],

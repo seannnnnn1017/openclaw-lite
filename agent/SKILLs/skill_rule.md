@@ -81,7 +81,7 @@ Important files for `notion_basic`:
 - `agent/SKILLs/notion_basic/SKILL.md`: prompt-facing skill description
 - `agent/SKILLs/notion_basic/examples.md`: usage examples for the model
 - `agent/SKILLs/notion_basic/skills_config.json`: runtime registration
-- `agent/SKILLs/notion_basic/scripts/notion_mcp_tool.py`: thin Notion MCP bridge that forwards native MCP `tools/list` and `tools/call` requests over HTTP
+- `agent/SKILLs/notion_basic/scripts/notion_mcp_tool.py`: Notion MCP bridge that forwards native `tools/list` and `tools/call` over HTTP and powers the internal `delegate_task` specialist path
 - `agent/data/system/secrets.example.json`: example local secret layout for shared LLM, Telegram, and Notion credentials
 - `agent/data/system/secrets.local.json`: ignored local secret store used by config loading and skills
 

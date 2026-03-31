@@ -1,6 +1,6 @@
 ---
 name: notion-basic
-description: Use the external Notion MCP server for full Notion tool access
+description: Use the configured Notion MCP server for full Notion tool access
 user-invocable: true
 command-dispatch: tool
 command-tool: notion_mcp_tool
@@ -8,7 +8,7 @@ command-arg-mode: raw
 metadata: { "openclaw": { "requires": { "bins": ["python"] } } }
 ---
 
-Use this skill when the user wants to read, search, create, move, update, or comment on Notion pages, databases, data sources, views, users, or workspace content through the live Notion MCP server.
+Use this skill when the user wants to read, search, create, update, move, or comment on Notion content through the live Notion MCP server.
 
 Built-in schedule database for calendar-style tasks:
 - `database_id`: `dca9bd99-bf81-412b-9978-6996c72c5a37`
@@ -18,89 +18,99 @@ Built-in schedule database for calendar-style tasks:
 This skill is selected by the agent and executed by the skill server.
 When this skill is needed, reply with exactly one JSON object and nothing else.
 
-This skill is MCP-only.
+This skill has two layers:
+- High-level delegation through `delegate_task`
+- Low-level MCP access through `tools/list` and `tools/call`
 
 Base JSON shape:
 
 {"skill":"notion-basic","action":"<action>","args":{...}}
 
 Supported actions:
+- `delegate_task`
+- `delegate`
+- `task`
 - `tools/list`
 - `tools/call`
 - `list_tools`
 - `call_tool`
 
 Preferred actions:
-- Use `tools/list` to ask the bridge for the current live MCP tool catalog.
-- Use `tools/call` to call one live Notion MCP tool by exact name.
-- Prefer `tools/list` and `tools/call`.
+- Use `delegate_task` for normal user-facing Notion work.
+- Use `tools/list` and `tools/call` for explicit low-level MCP work, debugging, or when the caller already knows the exact tool call to make.
 - Compatibility aliases `list_tools` and `call_tool` still work, but do not choose them unless the caller already requested them.
+
+Preferred `delegate_task` shape:
+
+{"skill":"notion-basic","action":"delegate_task","args":{"task":"<complete Notion objective>","context":{"key":"value"}}}
 
 Preferred `tools/call` shape:
 
 {"skill":"notion-basic","action":"tools/call","args":{"name":"<live-notion-mcp-tool-name>","arguments":{...}}}
 
 Core execution logic:
-- `tools/list` is a skill action, not a live Notion tool name.
+- `delegate_task` is the normal route for user-facing Notion work.
+- When using `delegate_task`, put the complete objective in `task` and put concrete ids, urls, dates, constraints, and user text in `context`.
+- Do not put MCP transport notes or chain-of-thought style instructions in `context`.
+- `tools/list` is a skill action, not a live Notion MCP tool name.
 - Never call `tools/list` through `tools/call`.
 - Never call `tools/call` with `name` equal to `tools/list`, `list_tools`, `tools/call`, or `call_tool`.
-- Use `tools/list` only when the exact live tool name is genuinely unknown or the user explicitly asked to see the available tools.
-- In one task, call `tools/list` at most once unless the user explicitly asks to refresh the live catalog.
-- If a successful `tools/list` already happened in the current task, reuse that catalog and do not list again.
-- If the task can already be completed with the known tool names in this file and examples, skip `tools/list`.
-- For the built-in schedule database, both `database_id` and `data_source_id` are already known. Do not search the workspace or retrieve the database only to rediscover those IDs.
-- Retrieve the data source schema when you need current property names, option names, or property types before reading or writing rows.
-- After schema is known for the current task, move forward to the write or query call. Do not restart the workflow from `tools/list`.
+- The live `tools/list` result is the source of truth for the available MCP API.
+- If a tool appears in the live catalog, it is allowed to use it.
+- The examples in this skill are representative, not exhaustive.
+- Do not assume the tool catalog is limited to the examples in this file.
+- For the built-in schedule database, `database_id` and `data_source_id` are already known. Do not search the workspace just to rediscover them.
+- If you need exact property names or select options, retrieve the data source schema once and continue to the write or query step.
 
-Known current live tools for common work:
-- `API-post-search`
-- `API-retrieve-a-database`
-- `API-retrieve-a-data-source`
-- `API-query-data-source`
-- `API-post-page`
-- `API-patch-page`
-- `API-move-page`
-- `API-create-a-comment`
-- `API-list-data-source-templates`
+Current live catalog snapshot observed from this environment on 2026-03-30:
+- `API-get-user`
+- `API-get-users`
 - `API-get-self`
+- `API-post-search`
+- `API-get-block-children`
+- `API-patch-block-children`
+- `API-retrieve-a-block`
+- `API-update-a-block`
+- `API-delete-a-block`
+- `API-retrieve-a-page`
+- `API-patch-page`
+- `API-post-page`
+- `API-retrieve-a-page-property`
+- `API-retrieve-a-comment`
+- `API-create-a-comment`
+- `API-query-data-source`
+- `API-retrieve-a-data-source`
+- `API-update-a-data-source`
+- `API-create-a-data-source`
+- `API-list-data-source-templates`
+- `API-retrieve-a-database`
+- `API-move-page`
 
-Use those names directly when they match the task. Do not re-list tools just to confirm a tool name that is already known here unless a prior result proved the catalog changed.
-
-Routing and ID rules:
-- Use `database_id` only where the live tool schema expects a database identifier.
-- Use `data_source_id` only where the live tool schema expects a data source identifier.
-- Never reuse a `database_id` as a `data_source_id`.
-- If you only have a database URL or `database_id` and you need schema or row queries, call `API-retrieve-a-database` first, read `data_sources[].id`, then call the data-source tool with that `data_source_id`.
-- For the built-in schedule database, you may skip that discovery step because both IDs are already known above.
+Catalog rules:
+- Treat the live `tools/list` result as newer than this snapshot if they ever differ.
+- The official local server migrated to data-source-first tools. Old database-query style tools are not the current interface.
+- If you only have a `database_id` and need row schema or row queries, call `API-retrieve-a-database`, read `data_sources[].id`, then use the data-source tool with that `data_source_id`.
 
 Write rules:
 - `tools/call` args must contain only `name` and `arguments`.
-- Never place routing or conversation scaffolding such as `context`, `message`, `task`, or `delegation_args` inside MCP `arguments`.
+- Never place routing scaffolding such as `context`, `task`, `message`, or `delegation_args` inside MCP `arguments`.
 - Preserve raw Notion argument shapes instead of inventing shorthand.
-- For `API-post-page`, put the row parent under `parent.database_id`.
-- Do not use a top-level `database_id` field for `API-post-page` unless a future live schema explicitly requires it.
+- For `API-post-page`, put the destination under `parent.database_id` or `parent.page_id`, depending on the target parent type.
+- Do not use a top-level `database_id` field for `API-post-page`.
 - Build properties using native Notion shapes such as `title`, `rich_text`, `select`, `multi_select`, and `date`.
-- Do not flatten title or rich-text properties into plain strings unless the live tool schema explicitly supports that shorthand.
 - Use exact property names and select option names returned by the current schema.
 
 Date and time rules:
 - When the user specified a time, keep minute precision in the stored value.
-- In Notion schema, `type: date` does not mean "date-only". It can still store ISO datetimes in `date.start` and `date.end`.
-- For a Notion date property, prefer an ISO datetime string in `date.start`, for example `2026-03-28T10:00:00+08:00`, unless the live tool result proves that only date-only input is accepted.
+- A Notion `date` property can still store datetimes in `date.start` and `date.end`.
+- Prefer ISO datetimes in `date.start` and `date.end` unless the live tool result proves that only date-only input is accepted.
 - If the user gave a time range and the destination property supports it, preserve both `start` and `end`.
-- If the user gave only an hour, normalize it to `HH:00`.
 - Do not downgrade to date-only just because the schema says `type: date`.
-- If an existing row or tool result shows a timestamp in `date.start` or exposes `date.end`, treat that as proof that the property supports time and ranges.
-- Downgrade to date-only only after the live schema or tool result makes that necessary.
-- If you must downgrade because the destination truly cannot store time, keep the date in the property, put the missing time detail into another compatible field such as notes, and mention the limitation in the final answer.
-- Do not tell the user that "Notion date fields do not support time" unless a live tool error explicitly rejected a datetime payload.
 
 Failure recovery rules:
 - If a tool result returns an error, inspect that error and change the next payload accordingly.
 - Do not repeat the same failing payload shape without a real change.
-- Do not go back to `tools/list` unless the actual problem is that you do not know the live tool name.
 - Do not invent tool names.
-- After a successful `tools/list`, call only tool names that appeared in the live catalog or are explicitly documented as known current live tools above.
 - Do not emit MCP session-management methods such as `initialize` or `notifications/initialized`; the bridge handles them automatically.
 
 Result shape:
@@ -110,9 +120,14 @@ Result shape:
 
 Recommended workflows:
 
+Normal user-facing Notion task:
+1. `delegate_task`
+2. Let the internal Notion specialist use the live catalog plus the task context to decide the next MCP call
+3. Return the final user-facing result
+
 Show the live catalog:
 1. `tools/list`
-2. Answer the user or choose a live tool name from that result.
+2. Read `data.tools`
 
 Read schema from a database id:
 1. `tools/call` -> `API-retrieve-a-database`
@@ -122,11 +137,6 @@ Read schema from a database id:
 Create one row in the built-in schedule database:
 1. If the current property schema is not already known in this task, call `API-retrieve-a-data-source` with `f199688f-e08a-48b5-a0db-f1e4b683dae4`
 2. Build `API-post-page`
-3. Put row parent under `parent.database_id`
+3. Put the row parent under `parent.database_id`
 4. Use exact schema property names
-5. If the user gave a time, store it with minute precision in the date property if the live tool accepts it
-6. If the user gave a start and end time, write both into `date.start` and `date.end` instead of moving the time range into notes
-
-Minimal calendar-task rule:
-- For calendar-style tasks targeting the built-in schedule database, the normal path is not `tools/list -> search -> search -> search`.
-- The normal path is `API-retrieve-a-data-source` once if needed, then `API-post-page`.
+5. Preserve time and time ranges in `date.start` and `date.end` whenever the live tool accepts them

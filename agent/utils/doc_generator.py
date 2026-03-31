@@ -75,9 +75,10 @@ def _skill_specific_notes(skill_name: str) -> list[str]:
         ]
     if skill_name == "notion-basic":
         return [
-            "Primary access goes through the external Notion MCP server over HTTP; prefer native MCP actions `tools/list` and `tools/call` to reach the live tool catalog.",
+            "Primary access goes through the external Notion MCP server over HTTP; prefer `delegate_task` for normal user-facing work.",
+            "Use `tools/list` as the source of truth for the live catalog, and use `tools/call` for any tool that appears there.",
             "When `notion.mcp_auto_start` is enabled (default), the skill can launch `@notionhq/notion-mcp-server` locally through `npx` using the configured Notion token; the first startup may take longer, so `notion.mcp_startup_timeout_seconds` can be raised if needed.",
-            "The local bridge still handles auth, session initialization, SSE parsing, and auto-start; the model should not emit `initialize` or notification methods.",
+            "The local bridge still handles auth, session initialization, SSE parsing, and auto-start; direct `tools/list` and `tools/call` should not depend on the delegate LLM path.",
             "This skill no longer includes the older hand-written Notion REST wrapper; all Notion work goes through MCP.",
         ]
     if skill_name == "schedule-task":

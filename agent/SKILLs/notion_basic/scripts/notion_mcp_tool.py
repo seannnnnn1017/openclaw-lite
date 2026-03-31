@@ -4,6 +4,7 @@ import hashlib
 import itertools
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,8 @@ DEFAULT_MCP_BASE_URL = "http://127.0.0.1:3000/mcp"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 45
 DEFAULT_STARTUP_TIMEOUT_SECONDS = 60
+DEFAULT_DELEGATE_MAX_STEPS = 8
+DEFAULT_DELEGATE_MAX_TOKENS = 4096
 DEFAULT_PACKAGE_NAME = "@notionhq/notion-mcp-server"
 LOCAL_MCP_LOG_PATH = AGENT_ROOT / ".codex-temp" / "notion_mcp_server.log"
 REMOVED_LEGACY_ACTIONS = {
@@ -109,6 +112,15 @@ def _parse_int(value, *, default: int) -> int:
         return default
 
 
+def _parse_float(value, *, default: float) -> float:
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _load_runtime_config() -> dict:
     all_secrets = load_secret_config()
     stored = all_secrets.get("notion", {}) if isinstance(all_secrets.get("notion"), dict) else {}
@@ -157,6 +169,430 @@ def _load_runtime_config() -> dict:
         "package_name": package_name,
         "config_path": str(SECRET_CONFIG_PATH),
     }
+
+
+def _load_delegate_runtime_config() -> dict:
+    config_path = AGENT_ROOT / "config" / "config.json"
+    raw_config = {}
+    try:
+        raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        raw_config = {}
+
+    llm = raw_config.get("llm", {}) if isinstance(raw_config.get("llm"), dict) else {}
+    all_secrets = load_secret_config()
+    llm_secrets = all_secrets.get("llm", {}) if isinstance(all_secrets.get("llm"), dict) else {}
+    notion_settings = all_secrets.get("notion", {}) if isinstance(all_secrets.get("notion"), dict) else {}
+
+    api_key = (
+        os.getenv("OPENCLAW_LLM_API_KEY")
+        or llm_secrets.get("api_key")
+        or llm.get("api_key")
+        or "lm-studio"
+    )
+    return {
+        "base_url": str(llm.get("base_url", "http://localhost:1234/v1")).strip(),
+        "api_key": str(api_key).strip() or "lm-studio",
+        "model": str(
+            os.getenv("OPENCLAW_NOTION_DELEGATE_MODEL")
+            or notion_settings.get("delegate_model")
+            or llm.get("model", "")
+        ).strip(),
+        "temperature": _parse_float(
+            os.getenv("OPENCLAW_NOTION_DELEGATE_TEMPERATURE") or notion_settings.get("delegate_temperature"),
+            default=0.1,
+        ),
+        "max_tokens": _parse_int(
+            os.getenv("OPENCLAW_NOTION_DELEGATE_MAX_TOKENS") or notion_settings.get("delegate_max_tokens"),
+            default=min(_parse_int(llm.get("max_tokens"), default=DEFAULT_DELEGATE_MAX_TOKENS), DEFAULT_DELEGATE_MAX_TOKENS),
+        ),
+        "max_steps": max(
+            2,
+            _parse_int(
+                os.getenv("OPENCLAW_NOTION_DELEGATE_MAX_STEPS") or notion_settings.get("delegate_max_steps"),
+                default=DEFAULT_DELEGATE_MAX_STEPS,
+            ),
+        ),
+        "no_think": _parse_bool(
+            os.getenv("OPENCLAW_NOTION_DELEGATE_NO_THINK", notion_settings.get("delegate_no_think")),
+            default=True,
+        ),
+    }
+
+
+def _load_delegate_llm_dependencies():
+    try:
+        from agent.core.schemas import ChatRequest, Message
+        from agent.integrations.lmstudio import LMStudioClient
+    except ModuleNotFoundError as primary_error:
+        try:
+            from core.schemas import ChatRequest, Message
+            from integrations.lmstudio import LMStudioClient
+        except ModuleNotFoundError as fallback_error:
+            missing_module = (
+                getattr(fallback_error, "name", None)
+                or getattr(primary_error, "name", None)
+                or "delegate_task runtime dependency"
+            )
+            raise RuntimeError(
+                "`delegate_task` requires optional LLM dependencies that are not installed. "
+                f"Missing module: {missing_module}"
+            ) from fallback_error
+    return ChatRequest, Message, LMStudioClient
+
+
+def _strip_think_blocks(text: str) -> str:
+    cleaned = re.sub(r"<think>.*?</think>", "", str(text or ""), flags=re.DOTALL)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def _try_parse_json_object(candidate: str):
+    cleaned = str(candidate or "").strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith("```") and cleaned.endswith("```"):
+        lines = cleaned.splitlines()
+        cleaned = "\n".join(lines[1:-1]).strip()
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        return payload
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            payload = json.loads(cleaned[start : end + 1])
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _normalize_delegate_decision(payload):
+    if not isinstance(payload, dict):
+        return None
+
+    mode = str(payload.get("mode", "")).strip().lower()
+    action = str(payload.get("action", "")).strip()
+
+    if payload.get("skill") == "notion-basic":
+        if action in {"tools/list", "list_tools"}:
+            return {"mode": "tools/list"}
+        if action in {"tools/call", "call_tool"}:
+            args = payload.get("args", {})
+            if not isinstance(args, dict):
+                return None
+            return {
+                "mode": "tools/call",
+                "name": str(args.get("name", "") or args.get("tool_name", "")).strip(),
+                "arguments": args.get("arguments", {}) if isinstance(args.get("arguments", {}), dict) else {},
+                "message": str(payload.get("message", "")).strip(),
+            }
+        if action in {"final", "done", "answer"}:
+            response = (
+                payload.get("response")
+                or payload.get("final_response")
+                or payload.get("message")
+                or ""
+            )
+            return {"mode": "final", "response": str(response).strip()}
+
+    if mode in {"tools/list", "list_tools"}:
+        return {"mode": "tools/list"}
+    if mode in {"tools/call", "call_tool"}:
+        arguments = payload.get("arguments", {})
+        if not isinstance(arguments, dict):
+            return None
+        return {
+            "mode": "tools/call",
+            "name": str(payload.get("name", "") or payload.get("tool_name", "")).strip(),
+            "arguments": arguments,
+            "message": str(payload.get("message", "")).strip(),
+        }
+    if mode in {"final", "done", "answer"}:
+        response = payload.get("response") or payload.get("final_response") or payload.get("message") or ""
+        return {"mode": "final", "response": str(response).strip()}
+    if "response" in payload and not action:
+        return {"mode": "final", "response": str(payload.get("response", "")).strip()}
+    return None
+
+
+def _build_delegate_system_prompt(*, no_think: bool) -> str:
+    prompt = """
+You are the internal Notion specialist for the `notion-basic` skill.
+Return exactly one JSON object and nothing else.
+
+Allowed output modes:
+{"mode":"tools/list"}
+{"mode":"tools/call","name":"<live-tool-name>","arguments":{...}}
+{"mode":"final","response":"<user-facing result or one concise clarifying question>"}
+
+Rules:
+- Think only enough to choose the next best action.
+- Prefer: short plan -> one tool call -> inspect result -> next action.
+- The live `tools/list` result is the source of truth for available Notion MCP tools.
+- If a tool appears in the live catalog, you may use it. Do not limit yourself to a small hardcoded subset.
+- Use `tools/list` to discover or refresh the live catalog whenever needed.
+- After a successful `tools/list`, do not invent tool names.
+- For the built-in schedule database, `database_id` and `data_source_id` are already known.
+- If you need exact schema property names, retrieve the data source once, then continue to the read/write step.
+- Preserve raw Notion argument shapes.
+- For `API-post-page`, place the destination under `parent.database_id`.
+- When the user specified a time, preserve minute precision.
+- In Notion, a `date` property can still store datetimes in `date.start` and `date.end`.
+- Ask at most one concise clarifying question only when critical information is truly missing.
+- Do not explain your reasoning. Do not emit markdown fences.
+""".strip()
+    if no_think:
+        return f"/no_think\n{prompt}"
+    return prompt
+
+
+def _extract_live_tool_names(result: dict) -> list[str]:
+    return sorted(
+        {
+            str(tool.get("name", "")).strip()
+            for tool in result.get("data", {}).get("tools", [])
+            if isinstance(tool, dict) and str(tool.get("name", "")).strip()
+        }
+    )
+
+
+def _build_delegate_task_packet(*, task: str, context: dict, live_tool_names: list[str]) -> str:
+    packet = {
+        "task": str(task or "").strip(),
+        "context": context,
+        "known_live_tools": live_tool_names,
+        "built_in_schedule_database": {
+            "database_id": "dca9bd99-bf81-412b-9978-6996c72c5a37",
+            "data_source_id": "f199688f-e08a-48b5-a0db-f1e4b683dae4",
+        },
+    }
+    return (
+        "Delegated Notion task packet:\n"
+        f"{json.dumps(packet, ensure_ascii=False, indent=2)}\n\n"
+        "Complete the task using only Notion MCP actions."
+    )
+
+
+def _build_delegate_repair_message(invalid_response: str) -> str:
+    return (
+        "Your previous reply was not a valid execution JSON object.\n"
+        "Return exactly one JSON object and nothing else.\n"
+        "Allowed forms:\n"
+        '{"mode":"tools/list"}\n'
+        '{"mode":"tools/call","name":"<live-tool-name>","arguments":{...}}\n'
+        '{"mode":"final","response":"<result>"}\n'
+        f"Previous reply:\n{invalid_response}"
+    )
+
+
+def _build_unknown_tool_message(requested_name: str, live_tool_names: set[str]) -> str:
+    listed = ", ".join(sorted(live_tool_names))
+    return (
+        f"`{requested_name}` was not present in the last `tools/list` result.\n"
+        "Do not invent tool names.\n"
+        + (f"Listed tools: {listed}" if listed else "Call `tools/list` first if you genuinely need the live catalog.")
+    )
+
+
+def _build_delegate_tool_result_message(*, decision: dict, result: dict) -> str:
+    mode = decision.get("mode", "")
+    if mode == "tools/list":
+        payload = {
+            "status": result.get("status"),
+            "message": result.get("message"),
+            "tool_names": _extract_live_tool_names(result),
+        }
+        return "Result of `tools/list`:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+    return "Result of `tools/call`:\n" + json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def _delegate_chat(client, chat_request_cls, llm_config: dict, messages) -> str:
+    request_payload = chat_request_cls(
+        model=llm_config["model"],
+        messages=messages,
+        temperature=llm_config["temperature"],
+        max_tokens=llm_config["max_tokens"],
+        stream=False,
+    )
+    return client.chat(request_payload)
+
+
+def _delegate_task(runtime_config: dict, *, task: str, context=None, max_steps=None) -> dict:
+    cleaned_task = str(task or "").strip()
+    if not cleaned_task:
+        return error_result("delegate_task", runtime_config["base_url"], "`task` is required.")
+
+    if context in (None, ""):
+        normalized_context = {}
+    elif isinstance(context, dict):
+        normalized_context = dict(context)
+    else:
+        normalized_context = {"value": context}
+
+    llm_config = _load_delegate_runtime_config()
+    if not llm_config.get("model"):
+        return error_result("delegate_task", runtime_config["base_url"], "No LLM model is configured for the Notion specialist.")
+
+    ChatRequest, Message, LMStudioClient = _load_delegate_llm_dependencies()
+    specialist_client = LMStudioClient(
+        base_url=llm_config["base_url"],
+        api_key=llm_config["api_key"],
+    )
+    live_tool_names = set()
+    live_catalog_loaded = False
+    tool_trace = []
+    last_tool_result = None
+
+    initial_catalog_result = _list_tools(runtime_config, action_name="tools/list")
+    initial_catalog_message = ""
+    if initial_catalog_result.get("status") == "ok":
+        live_tool_names = set(_extract_live_tool_names(initial_catalog_result))
+        live_catalog_loaded = True
+        last_tool_result = initial_catalog_result
+        tool_trace.append({"step": 0, "mode": "tools/list", "prefetch": True})
+        initial_catalog_message = _build_delegate_tool_result_message(
+            decision={"mode": "tools/list"},
+            result=initial_catalog_result,
+        )
+    else:
+        initial_catalog_message = (
+            "Initial `tools/list` prefetch failed. "
+            "The Notion specialist may retry or return the underlying error.\n"
+            + json.dumps(initial_catalog_result, ensure_ascii=False, indent=2)
+        )
+
+    messages = [
+        Message(role="system", content=_build_delegate_system_prompt(no_think=llm_config["no_think"])),
+        Message(
+            role="user",
+            content=_build_delegate_task_packet(
+                task=cleaned_task,
+                context=normalized_context,
+                live_tool_names=sorted(live_tool_names),
+            ),
+        ),
+        Message(role="user", content=initial_catalog_message),
+    ]
+
+    effective_max_steps = max(2, _parse_int(max_steps, default=llm_config["max_steps"]))
+
+    for step in range(1, effective_max_steps + 1):
+        response = _delegate_chat(specialist_client, ChatRequest, llm_config, messages)
+        cleaned_response = _strip_think_blocks(response)
+        decision = _normalize_delegate_decision(_try_parse_json_object(cleaned_response or response))
+        if not decision:
+            messages.append(Message(role="assistant", content=cleaned_response or str(response or "").strip()))
+            messages.append(Message(role="user", content=_build_delegate_repair_message(cleaned_response or response)))
+            continue
+
+        if decision["mode"] == "final":
+            final_response = str(decision.get("response", "")).strip()
+            if not final_response:
+                messages.append(Message(role="assistant", content=json.dumps(decision, ensure_ascii=False)))
+                messages.append(
+                    Message(
+                        role="user",
+                        content=_build_delegate_repair_message(json.dumps(decision, ensure_ascii=False)),
+                    )
+                )
+                continue
+            return ok(
+                "delegate_task",
+                runtime_config["base_url"],
+                data={
+                    "task": cleaned_task,
+                    "context": normalized_context,
+                    "final_response": final_response,
+                    "tool_calls": len(tool_trace),
+                    "tool_trace": tool_trace,
+                    "last_tool_result": last_tool_result,
+                    "delegate_model": llm_config["model"],
+                },
+                message="Delegated Notion specialist completed the task",
+            )
+
+        messages.append(Message(role="assistant", content=json.dumps(decision, ensure_ascii=False)))
+
+        if decision["mode"] == "tools/list":
+            tool_result = _list_tools(runtime_config, action_name="tools/list")
+            last_tool_result = tool_result
+            tool_trace.append({"step": step, "mode": "tools/list"})
+            if tool_result.get("status") == "ok":
+                live_tool_names = set(_extract_live_tool_names(tool_result))
+                live_catalog_loaded = True
+            messages.append(
+                Message(
+                    role="user",
+                    content=_build_delegate_tool_result_message(decision=decision, result=tool_result),
+                )
+            )
+            continue
+
+        tool_name = str(decision.get("name", "")).strip()
+        arguments = decision.get("arguments", {}) if isinstance(decision.get("arguments"), dict) else {}
+        if not tool_name:
+            messages.append(
+                Message(
+                    role="user",
+                    content=_build_delegate_repair_message(json.dumps(decision, ensure_ascii=False)),
+                )
+            )
+            continue
+        if live_catalog_loaded and tool_name not in live_tool_names:
+            messages.append(Message(role="user", content=_build_unknown_tool_message(tool_name, live_tool_names)))
+            continue
+
+        known_shape_error = _validate_known_call_shapes(
+            "tools/call",
+            runtime_config["base_url"],
+            tool_name,
+            arguments,
+        )
+        if known_shape_error is not None:
+            tool_result = known_shape_error
+        else:
+            tool_result = _call_tool(
+                runtime_config,
+                tool_name=tool_name,
+                arguments=arguments,
+                action_name="tools/call",
+            )
+        last_tool_result = tool_result
+        tool_trace.append(
+            {
+                "step": step,
+                "mode": "tools/call",
+                "tool_name": tool_name,
+                "status": tool_result.get("status", ""),
+            }
+        )
+        messages.append(
+            Message(
+                role="user",
+                content=_build_delegate_tool_result_message(decision=decision, result=tool_result),
+            )
+        )
+
+    return error_result(
+        "delegate_task",
+        runtime_config["base_url"],
+        "Delegated Notion specialist reached the maximum number of steps before producing a final response.",
+        data={
+            "task": cleaned_task,
+            "context": normalized_context,
+            "tool_calls": len(tool_trace),
+            "tool_trace": tool_trace,
+            "last_tool_result": last_tool_result,
+            "delegate_model": llm_config["model"],
+        },
+    )
 
 
 def _build_headers(runtime_config: dict, *, session_id: str = "", include_json: bool = True) -> dict:
@@ -586,6 +1022,26 @@ def run(action: str, **kwargs):
                 action_name=cleaned_action,
             )
 
+        if cleaned_action in {"delegate_task", "delegate", "task"}:
+            raw_task = kwargs.pop("task", "")
+            raw_context = kwargs.pop("context", {})
+            raw_max_steps = kwargs.pop("max_steps", None)
+            if kwargs:
+                unexpected_keys = sorted(str(key) for key in kwargs.keys())
+                return error_result(
+                    cleaned_action,
+                    runtime_config["base_url"],
+                    "For notion-basic `delegate_task`, args must use only `task`, `context`, and optional `max_steps`."
+                    f" Unexpected keys: {', '.join(unexpected_keys)}",
+                    data={"unexpected_keys": unexpected_keys},
+                )
+            return _delegate_task(
+                runtime_config,
+                task=raw_task,
+                context=raw_context,
+                max_steps=raw_max_steps,
+            )
+
         if cleaned_action in REMOVED_LEGACY_ACTIONS:
             return error_result(
                 cleaned_action,
@@ -597,7 +1053,7 @@ def run(action: str, **kwargs):
         return error_result(
             cleaned_action,
             runtime_config["base_url"],
-            "Unsupported notion-basic action. Use `tools/list` or `tools/call`.",
+            "Unsupported notion-basic action. Use `delegate_task` for normal work, or `tools/list` / `tools/call` for low-level MCP access.",
             data={"action": cleaned_action},
         )
     except Exception as exc:
