@@ -3,6 +3,8 @@ import { render, Box, Text, useApp } from 'ink';
 import TextInput from 'ink-text-input';
 import net from 'net';
 
+const h = React.createElement;
+
 const STYLES = {
   think:     { icon: '~', label: 'think    ', color: 'gray' },
   tool_call: { icon: '|', label: 'tool     ', color: 'yellow' },
@@ -61,35 +63,26 @@ function App() {
   const cols = process.stderr.columns || 80;
   const divider = '═'.repeat(cols);
 
-  return (
-    <Box flexDirection="column">
-      <Box flexDirection="column">
-        {messages.map((msg, i) => {
-          const s = STYLES[msg.style] || STYLES.assistant;
-          return (
-            <Box key={i}>
-              <Text color={s.color}>{s.icon} {s.label} </Text>
-              <Text>{msg.text}</Text>
-            </Box>
-          );
-        })}
-      </Box>
-      {waiting ? (
-        <Box marginTop={1}>
-          <Text color="cyan">[/] {waiting}</Text>
-        </Box>
-      ) : null}
-      <Text>{divider}</Text>
-      <Box>
-        <Text color="green" bold>{'> '}</Text>
-        <TextInput
-          value={inputValue}
-          onChange={setInputValue}
-          onSubmit={handleSubmit}
-        />
-      </Box>
-    </Box>
+  return h(Box, { flexDirection: 'column' },
+    h(Box, { flexDirection: 'column' },
+      ...messages.map((msg, i) => {
+        const s = STYLES[msg.style] || STYLES.assistant;
+        return h(Box, { key: i },
+          h(Text, { color: s.color }, `${s.icon} ${s.label} `),
+          h(Text, null, msg.text)
+        );
+      })
+    ),
+    waiting
+      ? h(Box, { marginTop: 1 }, h(Text, { color: 'cyan' }, `[/] ${waiting}`))
+      : null,
+    h(Text, null, divider),
+    h(Box, null,
+      h(Text, { color: 'green', bold: true }, '> '),
+      h(TextInput, { value: inputValue, onChange: setInputValue, onSubmit: handleSubmit })
+    )
   );
 }
 
-render(<App />, { stdout: process.stderr });
+// Render to stderr so process.stdout stays clean for Python IPC
+render(h(App, null), { stdout: process.stderr });
