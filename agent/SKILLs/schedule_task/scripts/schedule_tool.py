@@ -4,14 +4,14 @@ from pathlib import Path
 
 def _load_run_schedule_skill():
     try:
-        from agent.schedule_runtime import run_schedule_skill
+        from agent.scheduling.runtime import run_schedule_skill
 
         return run_schedule_skill
     except ModuleNotFoundError:
         pass
 
     try:
-        from schedule_runtime import run_schedule_skill
+        from scheduling.runtime import run_schedule_skill
 
         return run_schedule_skill
     except ModuleNotFoundError:
@@ -26,11 +26,11 @@ def _load_run_schedule_skill():
             sys.path.insert(0, candidate)
 
     try:
-        from agent.schedule_runtime import run_schedule_skill
+        from agent.scheduling.runtime import run_schedule_skill
 
         return run_schedule_skill
     except ModuleNotFoundError:
-        from schedule_runtime import run_schedule_skill
+        from scheduling.runtime import run_schedule_skill
 
         return run_schedule_skill
 

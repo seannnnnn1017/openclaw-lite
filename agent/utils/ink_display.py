@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import socket
 import subprocess
@@ -64,6 +65,14 @@ class InkDisplay:
             raise RuntimeError("Ink UI did not connect within 5 seconds")
         self._conn.settimeout(None)
         self._conn_file = self._conn.makefile("w", encoding="utf-8")
+
+        # Background thread pipes Ink stdout into a queue so read_input()
+        # can return immediately while try_read_input() supports timeouts.
+        self._input_queue: queue.Queue[str] = queue.Queue()
+        self._reader_thread = threading.Thread(
+            target=self._read_input_loop, daemon=True, name="ink-input-reader"
+        )
+        self._reader_thread.start()
 
     # ------------------------------------------------------------------
     # IPC: send event to Ink
@@ -200,6 +209,14 @@ class InkDisplay:
     def memory(self, text: str) -> None:
         self._emit("memory", text)
 
+    def set_hud(self, model: str = "", token_used: int | None = None, context_window: int = 0) -> None:
+        self._send({
+            "type": "set_hud",
+            "model": str(model or "").strip(),
+            "token_used": token_used if token_used is not None else 0,
+            "context_window": max(0, int(context_window or 0)),
+        })
+
     def set_waiting(self, text: str) -> None:
         self._send({"type": "set_waiting", "text": str(text or "")})
 
@@ -226,8 +243,28 @@ class InkDisplay:
     # User input
     # ------------------------------------------------------------------
 
+    def _read_input_loop(self) -> None:
+        """Background thread: reads lines from Ink stdout into _input_queue."""
+        while True:
+            try:
+                line = self._proc.stdout.readline()
+            except Exception:
+                break
+            if not line:
+                break
+            try:
+                text = json.loads(line.decode("utf-8").strip()).get("text", "")
+                self._input_queue.put(text)
+            except Exception:
+                pass
+
     def read_input(self) -> str:
-        line = self._proc.stdout.readline()
-        if not line:
-            raise EOFError("Ink process closed stdout")
-        return json.loads(line.decode("utf-8").strip())["text"]
+        """Block until the user submits a message."""
+        return self._input_queue.get()
+
+    def try_read_input(self, timeout: float) -> str | None:
+        """Return a queued message within *timeout* seconds, or None."""
+        try:
+            return self._input_queue.get(timeout=timeout)
+        except queue.Empty:
+            return None

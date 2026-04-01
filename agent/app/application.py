@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -69,6 +70,7 @@ class AgentApplication:
         architecture_path = generate_system_architecture(self.config)
         self.display.system(f"System doc generated: {architecture_path}")
         self.display.system(f"Debug session log: {self.debug_logger.path}")
+        self.display.set_hud(model=self.config.model, token_used=0, context_window=self.config.context_window)
         self.debug_logger.log_event(
             "session_start",
             pid=os.getpid(),
@@ -152,6 +154,14 @@ class AgentApplication:
             debug_logger=self.debug_logger,
         )
 
+    def _refresh_display_hud(self):
+        token_summary = self.main_agent.token_estimate_summary()
+        self.display.set_hud(
+            model=self.config.model,
+            token_used=token_summary["base_total_tokens"],
+            context_window=self.config.context_window,
+        )
+
     def reload_runtime(self) -> Path:
         self.config.reload_now()
         self.main_agent.refresh_runtime_clients()
@@ -161,6 +171,7 @@ class AgentApplication:
             model=self.config.model,
             skill_count=len(self.config.skills),
         )
+        self._refresh_display_hud()
         return generate_system_architecture(self.config)
 
     def _handle_cli_command(self, command_line: str, *, agent: SimpleAgent) -> dict:
@@ -258,6 +269,8 @@ class AgentApplication:
         try:
             while True:
                 user_input = self.display.read_input().strip()
+                if not user_input:
+                    continue
                 if user_input.lower() in {"exit", "quit"}:
                     break
 
@@ -270,20 +283,42 @@ class AgentApplication:
                         break
                     continue
 
-                try:
+                # Run agent in a background thread so the main thread can
+                # intercept new user messages as interrupts while it works.
+                _result: dict = {"reply": None, "exc": None}
+
+                def _agent_turn(inp=user_input, out=_result):
                     try:
-                        reply = self.main_agent.run(
-                            user_input,
-                            debug_context={
-                                "source": "terminal",
-                                "session": "main",
-                            },
+                        out["reply"] = self.main_agent.run(
+                            inp,
+                            debug_context={"source": "terminal", "session": "main"},
                         )
-                    finally:
-                        self.display.clear_waiting()
-                    self.display.agent(reply)
-                except Exception as exc:
-                    self.display.error(str(exc))
+                    except Exception as exc:
+                        out["exc"] = exc
+
+                agent_thread = threading.Thread(
+                    target=_agent_turn, daemon=True, name="agent-turn"
+                )
+                agent_thread.start()
+
+                while agent_thread.is_alive():
+                    queued = self.display.try_read_input(timeout=0.15)
+                    if queued is not None:
+                        queued = queued.strip()
+                        if queued:
+                            self.main_agent.enqueue_interrupt(queued)
+                            self.display.system(
+                                f"Queued (injecting after next tool step): {queued[:80]}"
+                            )
+
+                agent_thread.join()
+                self.display.clear_waiting()
+                self._refresh_display_hud()
+
+                if _result["exc"] is not None:
+                    self.display.error(str(_result["exc"]))
+                elif _result["reply"] is not None:
+                    self.display.agent(_result["reply"])
         finally:
             self.debug_logger.log_event("session_stop")
             self.telegram_runtime.stop()

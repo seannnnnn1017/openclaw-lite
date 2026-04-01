@@ -43,6 +43,8 @@ class SimpleAgent:
             debug_logger=debug_logger,
         )
         self.max_tool_steps = 20
+        self._interrupt_queue: list[str] = []
+        self._interrupt_lock = threading.Lock()
 
     def _log_debug(self, kind: str, **payload):
         if not self.debug_logger:
@@ -179,6 +181,15 @@ class SimpleAgent:
             self.history.append(Message(role="assistant", content=content))
             if len(self.history) > 10:
                 self.history = self.history[-10:]
+
+    def enqueue_interrupt(self, text: str) -> None:
+        with self._interrupt_lock:
+            self._interrupt_queue.append(str(text or "").strip())
+
+    def _flush_interrupt_queue(self) -> list[str]:
+        with self._interrupt_lock:
+            pending, self._interrupt_queue = self._interrupt_queue, []
+        return [t for t in pending if t]
 
     def clear_history(self) -> int:
         with self.history_lock:
@@ -848,6 +859,14 @@ class SimpleAgent:
                     skill_result=skill_result,
                 )
                 messages.append(self._build_tool_result_message(skill_result))
+
+                pending_interrupts = self._flush_interrupt_queue()
+                for interrupt_text in pending_interrupts:
+                    self.display.system(f"Injecting queued message: {interrupt_text[:80]}")
+                    messages.append(Message(
+                        role="user",
+                        content=f"[User message received while you were executing a tool]\n{interrupt_text}",
+                    ))
 
             self._append_history(
                 persisted_user_input,

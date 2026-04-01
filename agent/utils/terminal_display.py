@@ -1,6 +1,7 @@
 import sys
 import threading
 from contextlib import contextmanager
+from datetime import datetime
 from shutil import get_terminal_size
 
 try:
@@ -97,7 +98,54 @@ class TerminalDisplay:
         self._spinner_interval = 0.12
         self._spinner_stop_event: threading.Event | None = None
         self._spinner_thread: threading.Thread | None = None
+        self._hud_model: str = ""
+        self._hud_token_used: int | None = None
+        self._hud_context_window: int = 0
         self._prompt_session = PromptSession() if self._supports_prompt_toolkit() else None
+
+    def set_hud(self, model: str = "", token_used: int | None = None, context_window: int = 0):
+        with self._lock:
+            self._hud_model = str(model or "").strip()
+            self._hud_token_used = token_used
+            self._hud_context_window = max(0, int(context_window or 0))
+
+    def _format_hud(self) -> str:
+        parts = []
+        if self._hud_model:
+            model = self._hud_model
+            if len(model) > 24:
+                model = model[:21] + "..."
+            parts.append(model)
+        if self._hud_token_used is not None and self._hud_context_window > 0:
+            used = self._hud_token_used
+            limit = self._hud_context_window
+            ratio = min(1.0, used / limit)
+            bar_width = 8
+            filled = round(ratio * bar_width)
+            bar = "\u2588" * filled + "\u2591" * (bar_width - filled)
+            def _k(n: int) -> str:
+                return f"{n / 1000:.1f}K" if n >= 1000 else str(n)
+            parts.append(f"{bar} {_k(used)}/{_k(limit)}")
+        parts.append(datetime.now().strftime("%H:%M:%S"))
+        return "  \u2502  ".join(parts)
+
+    def _rule_with_hud(self) -> str:
+        hud = self._format_hud()
+        width = self._terminal_columns()
+        if not hud:
+            if self._color:
+                return f"{self._c(_GRAY, _DIM)}{_RULE_CHAR * width}{self._c(_R)}"
+            return _RULE_CHAR * width
+        hud_block = f"[ {hud} ]"
+        hud_len = len(hud_block)
+        rule_len = max(0, width - hud_len)
+        rule = _RULE_CHAR * rule_len
+        if self._color:
+            return (
+                f"{self._c(_GRAY, _DIM)}{rule}{self._c(_R)}"
+                f"{self._c(_CYAN)}{hud_block}{self._c(_R)}"
+            )
+        return rule + hud_block
 
     def _c(self, *codes: str) -> str:
         return "".join(codes) if self._color else ""
@@ -135,15 +183,21 @@ class TerminalDisplay:
     def _prompt_pt_text(self):
         if not self._supports_prompt_toolkit():
             return "> "
+        rule = self._rule_with_hud()
         if self._color:
             return ANSI(
-                f"{self._c(_GRAY, _DIM)}{self._rule_text()}{self._c(_R)}\n"
+                f"{rule}\n"
                 f"{self._c(_BGREEN, _BOLD)}>{self._c(_R)} "
             )
         return f"{self._rule_text()}\n> "
 
     def _prompt_pt_toolbar(self):
-        return ""
+        hud = self._format_hud()
+        if not hud:
+            return ""
+        if self._color:
+            return ANSI(f"{self._c(_GRAY, _DIM)}  {hud}{self._c(_R)}")
+        return f"  {hud}"
 
     def _fit_status_line(self, text: str, *, reserve: int = 0) -> str:
         width = self._terminal_columns()
@@ -177,7 +231,7 @@ class TerminalDisplay:
         if self._color:
             status_text = f"{self._c(_CYAN, _BOLD)}{status_text}{self._c(_R)}"
         sys.stdout.write(
-            f"{self._ansi_rule()}\n"
+            f"{self._rule_with_hud()}\n"
             f"{prompt_prefix}{status_text}\n"
         )
         sys.stdout.flush()
@@ -385,9 +439,13 @@ class TerminalDisplay:
                 print(prompt_prefix, end="", flush=True)
                 return
 
-            border = self._ansi_rule()
+            border = self._rule_with_hud()
             sys.stdout.write(f"{border}\n{prompt_prefix}")
             sys.stdout.flush()
+
+    def try_read_input(self, timeout: float) -> str | None:
+        """TerminalDisplay does not support non-blocking input reads."""
+        return None
 
     def read_input(self) -> str:
         if self._supports_prompt_toolkit():

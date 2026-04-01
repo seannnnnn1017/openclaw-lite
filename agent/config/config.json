@@ -5,6 +5,7 @@
     "model": "qwen/qwen3.5-9b",
     "temperature": 0.7,
     "max_tokens": 25392,
+    "context_window": 32768,
     "stream": false
   },
   "skill_server": {
