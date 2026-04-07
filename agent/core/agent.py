@@ -573,7 +573,7 @@ class SimpleAgent:
             payload = json.loads(candidate)
         except json.JSONDecodeError:
             return None
-        if isinstance(payload, dict) and isinstance(payload.get("memory"), str):
+        if isinstance(payload, dict) and payload.get("memory") in {"write", "search"}:
             return payload
         return None
 
