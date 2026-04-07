@@ -32,7 +32,7 @@ def _truncate(text: str) -> str:
     encoded = result.encode("utf-8")
     if len(encoded) > MAX_BYTES:
         cut = encoded[:MAX_BYTES].rfind(b"\n")
-        if cut <= 0:
+        if cut < 0:
             cut = MAX_BYTES
         result = encoded[: cut + 1].decode("utf-8", errors="replace")
         truncated = True
