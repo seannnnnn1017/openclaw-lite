@@ -39,7 +39,10 @@ class MemoryWriter:
 
     def search(self, command: dict) -> str:
         query = str(command.get("query", "")).strip()
-        limit = max(1, int(command.get("limit", 20)))
+        try:
+            limit = max(1, int(command.get("limit", 20)))
+        except (TypeError, ValueError):
+            limit = 20
 
         if not query:
             return "No query provided."
