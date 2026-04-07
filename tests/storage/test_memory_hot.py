@@ -59,3 +59,16 @@ def test_truncation_does_not_cut_mid_line(tmp_path):
         stripped = line.strip()
         if stripped:
             assert stripped.startswith("- ["), f"Mid-line cut detected: {stripped[:60]}"
+
+
+def test_newline_at_byte_zero_does_not_hard_cut(tmp_path):
+    # Exercises the path where rfind returns 0 (newline at byte position 0).
+    # Before the fix this would trigger the hard-byte fallback; now it cuts cleanly.
+    from agent.storage.memory_hot import MAX_BYTES
+    content = "\n" + "x" * (MAX_BYTES - 1) + "\nextra\n"
+    (tmp_path / "MEMORY.md").write_text(content, encoding="utf-8")
+    layer = MemoryHotLayer(tmp_path)
+    result = layer.load()
+    assert WARNING in result           # truncation was flagged
+    assert "extra" not in result       # content past cut boundary excluded
+    assert result.startswith("\n")     # clean cut at byte-0 newline preserved
