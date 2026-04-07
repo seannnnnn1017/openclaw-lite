@@ -266,9 +266,47 @@ class AgentApplication:
         self.scheduler.start()
         self.telegram_runtime.start()
 
+        _exit_pending: bool = False
+        _exit_timer: threading.Timer | None = None
+
+        def _arm_exit():
+            nonlocal _exit_pending, _exit_timer
+            _exit_pending = True
+            if _exit_timer:
+                _exit_timer.cancel()
+
+            def _cancel():
+                nonlocal _exit_pending, _exit_timer
+                _exit_pending = False
+                _exit_timer = None
+                self.display.system("Exit cancelled.")
+
+            _exit_timer = threading.Timer(3.0, _cancel)
+            _exit_timer.daemon = True
+            _exit_timer.start()
+            self.display.system("Press Ctrl+C again within 3s to exit.")
+
+        def _disarm_exit():
+            nonlocal _exit_pending, _exit_timer
+            if _exit_timer:
+                _exit_timer.cancel()
+                _exit_timer = None
+            _exit_pending = False
+
         try:
             while True:
-                user_input = self.display.read_input().strip()
+                try:
+                    user_input = self.display.read_input().strip()
+                except KeyboardInterrupt:
+                    if _exit_pending:
+                        _disarm_exit()
+                        break
+                    _arm_exit()
+                    continue
+
+                if user_input and _exit_pending:
+                    _disarm_exit()
+
                 if not user_input:
                     continue
                 if user_input.lower() in {"exit", "quit"}:
@@ -301,15 +339,30 @@ class AgentApplication:
                 )
                 agent_thread.start()
 
+                agent_interrupted = False
                 while agent_thread.is_alive():
-                    queued = self.display.try_read_input(timeout=0.15)
+                    try:
+                        queued = self.display.try_read_input(timeout=0.15)
+                    except KeyboardInterrupt:
+                        if _exit_pending:
+                            _disarm_exit()
+                            agent_interrupted = True
+                            break
+                        _arm_exit()
+                        continue
                     if queued is not None:
                         queued = queued.strip()
                         if queued:
+                            if _exit_pending:
+                                _disarm_exit()
                             self.main_agent.enqueue_interrupt(queued)
                             self.display.system(
                                 f"Queued (injecting after next tool step): {queued[:80]}"
                             )
+
+                if agent_interrupted:
+                    self.display.clear_waiting()
+                    break
 
                 agent_thread.join()
                 self.display.clear_waiting()
@@ -320,6 +373,7 @@ class AgentApplication:
                 elif _result["reply"] is not None:
                     self.display.agent(_result["reply"])
         finally:
+            _disarm_exit()
             self.debug_logger.log_event("session_stop")
             self.telegram_runtime.stop()
             self.scheduler.stop()

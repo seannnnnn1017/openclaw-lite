@@ -63,8 +63,12 @@ class MemoryWarmSelector:
             f"Memory index:\n{index}\n\n"
             f"User message: {str(user_input or '')[:400]}"
         )
+        extractor_model = (
+            str(getattr(self._config, "memory_extractor_model", "") or "").strip()
+            or self._config.model
+        )
         request = ChatRequest(
-            model=self._config.model,
+            model=extractor_model,
             messages=[
                 Message(role="system", content=_SELECTOR_SYSTEM),
                 Message(role="user", content=user_prompt),
