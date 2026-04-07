@@ -14,7 +14,7 @@ try:
     from skill.client import SkillClient
     from utils.terminal_display import TerminalDisplay
     from core.token_estimator import summarize_prompt_and_history
-    from storage.memory import LongTermMemoryManager
+    from storage.memory import MemoryCoordinator
 except ImportError:
     from agent.skill.auto_context import collect_auto_context_messages
     from agent.skill.delegated_executor import DelegatedSkillExecutor
@@ -23,7 +23,7 @@ except ImportError:
     from agent.skill.client import SkillClient
     from agent.utils.terminal_display import TerminalDisplay
     from agent.core.token_estimator import summarize_prompt_and_history
-    from agent.storage.memory import LongTermMemoryManager
+    from agent.storage.memory import MemoryCoordinator
 
 
 class SimpleAgent:
@@ -36,12 +36,13 @@ class SimpleAgent:
         self.history_lock = threading.Lock()
         self.run_lock = threading.RLock()
         self.skill_client = SkillClient(base_url=config.skill_server_url)
-        self.memory_manager = LongTermMemoryManager(
+        self.memory_coordinator = MemoryCoordinator(
             config=config,
             client=client,
             display=self.display,
             debug_logger=debug_logger,
         )
+        self.memory_coordinator.start_session()
         self.max_tool_steps = 20
         self._interrupt_queue: list[str] = []
         self._interrupt_lock = threading.Lock()
@@ -210,7 +211,7 @@ class SimpleAgent:
         )
 
     def long_term_memory_summary(self) -> dict:
-        return self.memory_manager.stats()
+        return self.memory_coordinator.stats()
 
     def set_show_think(self, enabled: bool):
         self.display.set_enabled("think", enabled)
@@ -227,12 +228,13 @@ class SimpleAgent:
             api_key=self.config.api_key,
         )
         self.skill_client = SkillClient(base_url=self.config.skill_server_url)
-        self.memory_manager = LongTermMemoryManager(
+        self.memory_coordinator = MemoryCoordinator(
             config=self.config,
             client=self.client,
             display=self.display,
             debug_logger=self.debug_logger,
         )
+        self.memory_coordinator.start_session()
 
     def _get_skill_config(self, skill_name: str) -> dict | None:
         if hasattr(self.config, "get_skill"):
@@ -393,9 +395,13 @@ class SimpleAgent:
                 content=self.config.agent_layers.build_system_prompt(),
             ),
         ]
-        memory_message = self.memory_manager.build_memory_message(user_input)
-        if memory_message:
-            messages.append(Message(role="system", content=memory_message))
+        hot_content = self.memory_coordinator.build_hot_message()
+        if hot_content:
+            messages.append(Message(role="system", content=hot_content))
+        active_skills = [str(s.get("name", "")) for s in getattr(self.config, "skills", [])]
+        warm_content = self.memory_coordinator.build_warm_message(user_input, active_skills)
+        if warm_content:
+            messages.append(Message(role="system", content=warm_content))
         messages.extend(history_snapshot)
         messages.append(Message(role="user", content=user_input))
         return messages
@@ -556,6 +562,21 @@ class SimpleAgent:
 
         return None
 
+    def _parse_memory_command(self, text: str) -> dict | None:
+        if not text:
+            return None
+        candidate = str(text).strip()
+        if candidate.startswith("```") and candidate.endswith("```"):
+            lines = candidate.splitlines()
+            candidate = "\n".join(lines[1:-1]).strip()
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(payload, dict) and isinstance(payload.get("memory"), str):
+            return payload
+        return None
+
     def _build_tool_result_message(self, skill_result: dict):
         result_json = json.dumps(skill_result, ensure_ascii=False)
         if self._skill_result_has_error(skill_result):
@@ -692,6 +713,14 @@ class SimpleAgent:
                 elif not visible_response:
                     visible_response = response.strip()
                 last_response = visible_response
+
+                memory_command = self._parse_memory_command(cleaned_response or response)
+                if memory_command:
+                    mem_result = self.memory_coordinator.handle_memory_command(memory_command)
+                    messages.append(Message(role="assistant", content=json.dumps(memory_command, ensure_ascii=False)))
+                    messages.append(Message(role="user", content=f"Memory operation result:\n{mem_result}\n\nContinue answering the user."))
+                    continue
+
                 skill_call = self._parse_skill_call(cleaned_response or response)
                 if not skill_call:
                     if self._looks_like_tool_payload(cleaned_response or response):
@@ -735,10 +764,9 @@ class SimpleAgent:
                         visible_response,
                         assistant_events=turn_history_events,
                     )
-                    self.memory_manager.remember_turn(
-                        user_input=persisted_user_input,
+                    self.memory_coordinator.append_turn(
+                        user_input=str(persisted_user_input or ""),
                         assistant_response=visible_response,
-                        debug_context=normalized_debug_context,
                     )
                     self._log_debug(
                         "final_response",
@@ -873,10 +901,9 @@ class SimpleAgent:
                 last_response,
                 assistant_events=turn_history_events,
             )
-            self.memory_manager.remember_turn(
-                user_input=persisted_user_input,
+            self.memory_coordinator.append_turn(
+                user_input=str(persisted_user_input or ""),
                 assistant_response=last_response,
-                debug_context=normalized_debug_context,
             )
             self._log_debug(
                 "final_response",
