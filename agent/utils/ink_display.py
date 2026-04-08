@@ -46,14 +46,19 @@ class InkDisplay:
         self._server.listen(1)
         port = self._server.getsockname()[1]
 
-        # Spawn Ink subprocess
+        # Spawn Ink subprocess.
+        # On Windows use CREATE_NEW_PROCESS_GROUP so Ctrl+C (CTRL_C_EVENT) is
+        # not forwarded to the Node.js child — Python handles the signal itself.
         ui_script = self._UI_DIR / "index.js"
+        import sys as _sys
+        _creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP if _sys.platform == "win32" else 0
         self._proc = subprocess.Popen(
             ["node", str(ui_script)],
             stdin=None,              # inherit: real TTY for keyboard
             stdout=subprocess.PIPE,  # pipe: Python reads user input
             stderr=None,             # inherit: Ink renders UI here
             env={**os.environ, "OPENCLAW_IPC_PORT": str(port), "FORCE_COLOR": "3"},
+            creationflags=_creation_flags,
         )
 
         # Accept Ink's connection (5s timeout)
@@ -259,8 +264,17 @@ class InkDisplay:
                 pass
 
     def read_input(self) -> str:
-        """Block until the user submits a message."""
-        return self._input_queue.get()
+        """Block until the user submits a message.
+
+        Uses a polling loop with a short timeout so that KeyboardInterrupt
+        is delivered reliably on Windows (a blocking queue.get() with no
+        timeout cannot be interrupted by Ctrl+C on that platform).
+        """
+        while True:
+            try:
+                return self._input_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
 
     def try_read_input(self, timeout: float) -> str | None:
         """Return a queued message within *timeout* seconds, or None."""
