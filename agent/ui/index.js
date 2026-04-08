@@ -151,8 +151,12 @@ function App() {
     return () => client.destroy();
   }, [exit]);
 
-  // History navigation
-  useInput((_, key) => {
+  // Global key handler: Ctrl+C forwarded to Python, arrow keys for history
+  useInput((input, key) => {
+    if (key.ctrl && input === 'c') {
+      process.stdout.write(JSON.stringify({ type: 'ctrl_c' }) + '\n');
+      return;
+    }
     if (key.upArrow) {
       if (inputHistory.length === 0) return;
       if (historyIndex === -1) {
@@ -206,4 +210,4 @@ function App() {
   );
 }
 
-render(h(App, null), { stdout: process.stderr });
+render(h(App, null), { stdout: process.stderr, exitOnCtrlC: false });

@@ -248,6 +248,9 @@ class InkDisplay:
     # User input
     # ------------------------------------------------------------------
 
+    # Sentinel: Ink forwarded a Ctrl+C keystroke — caller should raise KeyboardInterrupt.
+    _CTRL_C = object()
+
     def _read_input_loop(self) -> None:
         """Background thread: reads lines from Ink stdout into _input_queue."""
         while True:
@@ -258,27 +261,31 @@ class InkDisplay:
             if not line:
                 break
             try:
-                text = json.loads(line.decode("utf-8").strip()).get("text", "")
-                self._input_queue.put(text)
+                ev = json.loads(line.decode("utf-8").strip())
+                if ev.get("type") == "ctrl_c":
+                    self._input_queue.put(InkDisplay._CTRL_C)
+                else:
+                    self._input_queue.put(ev.get("text", ""))
             except Exception:
                 pass
 
     def read_input(self) -> str:
-        """Block until the user submits a message.
-
-        Uses a polling loop with a short timeout so that KeyboardInterrupt
-        is delivered reliably on Windows (a blocking queue.get() with no
-        timeout cannot be interrupted by Ctrl+C on that platform).
-        """
+        """Block until the user submits a message, or raise KeyboardInterrupt on Ctrl+C."""
         while True:
             try:
-                return self._input_queue.get(timeout=0.1)
+                item = self._input_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
+            if item is InkDisplay._CTRL_C:
+                raise KeyboardInterrupt
+            return item
 
     def try_read_input(self, timeout: float) -> str | None:
-        """Return a queued message within *timeout* seconds, or None."""
+        """Return a queued message within *timeout* seconds, or None. Raises KeyboardInterrupt on Ctrl+C."""
         try:
-            return self._input_queue.get(timeout=timeout)
+            item = self._input_queue.get(timeout=timeout)
         except queue.Empty:
             return None
+        if item is InkDisplay._CTRL_C:
+            raise KeyboardInterrupt
+        return item
