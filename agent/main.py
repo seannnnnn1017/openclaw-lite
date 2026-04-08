@@ -1,13 +1,16 @@
+"""Backward-compatibility shim. Run `python main.py` from the project root instead."""
+import sys
 from pathlib import Path
 
-try:
-    from app.application import AgentApplication
-except ModuleNotFoundError:
-    from agent.app.application import AgentApplication
+# Add project root (parent of agent/) to sys.path
+_project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_project_root))
+
+from agent.app.application import AgentApplication
 
 
 def main():
-    config_path = Path(__file__).resolve().parent / "config" / "config.json"
+    config_path = _project_root / "agent" / "config" / "config.json"
     AgentApplication(config_path=config_path).run()
 
 
