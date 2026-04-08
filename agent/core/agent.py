@@ -44,6 +44,7 @@ class SimpleAgent:
         )
         self.memory_coordinator.start_session()
         self.max_tool_steps = 20
+        self._session_auto_context_executed: set[str] = set()
         self._interrupt_queue: list[str] = []
         self._interrupt_lock = threading.Lock()
 
@@ -289,12 +290,14 @@ class SimpleAgent:
         executed_skills: set[str],
         debug_context: dict | None = None,
     ) -> set[str]:
-        auto_messages, updated_executed = collect_auto_context_messages(
+        auto_messages, updated_executed, updated_session = collect_auto_context_messages(
             self.config.skills,
             user_input=user_input,
             skill_call=skill_call,
             executed_skills=executed_skills,
+            session_executed_skills=self._session_auto_context_executed,
         )
+        self._session_auto_context_executed = updated_session
         for index, content in enumerate(auto_messages, start=1):
             messages.append(Message(role="user", content=content))
             self._log_debug(
