@@ -13,7 +13,7 @@ try:
     from core.schemas import Message, ChatRequest
     from skill.client import SkillClient
     from utils.terminal_display import TerminalDisplay
-    from core.token_estimator import summarize_prompt_and_history
+    from core.token_estimator import summarize_prompt_and_history, summarize_with_breakdown
     from storage.memory import MemoryCoordinator
 except ImportError:
     from agent.skill.auto_context import collect_auto_context_messages
@@ -22,7 +22,7 @@ except ImportError:
     from agent.core.schemas import Message, ChatRequest
     from agent.skill.client import SkillClient
     from agent.utils.terminal_display import TerminalDisplay
-    from agent.core.token_estimator import summarize_prompt_and_history
+    from agent.core.token_estimator import summarize_prompt_and_history, summarize_with_breakdown
     from agent.storage.memory import MemoryCoordinator
 
 
@@ -46,6 +46,7 @@ class SimpleAgent:
         self.max_tool_steps = 20
         self._session_auto_context_executed: set[str] = set()
         self._interrupt_queue: list[str] = []
+        self._last_mem_tokens: int = 0
         self._interrupt_lock = threading.Lock()
 
     def _log_debug(self, kind: str, **payload):
@@ -206,9 +207,12 @@ class SimpleAgent:
     def token_estimate_summary(self) -> dict:
         with self.history_lock:
             history_snapshot = list(self.history)
-        return summarize_prompt_and_history(
-            self.config.agent_layers.build_system_prompt(),
-            history_snapshot,
+        layers = self.config.agent_layers
+        return summarize_with_breakdown(
+            base_text=layers.build_base_text(),
+            skills_text=layers.build_skills_text(),
+            mem_tokens=self._last_mem_tokens,
+            history_snapshot=history_snapshot,
         )
 
     def long_term_memory_summary(self) -> dict:
@@ -227,6 +231,10 @@ class SimpleAgent:
         self.client = LMStudioClient(
             base_url=self.config.base_url,
             api_key=self.config.api_key,
+            context_window=self.config.context_window,
+            ensure_model_loaded=self.config.ensure_model_loaded,
+            model_load_key=self.config.model_load_key,
+            model_load_timeout_seconds=self.config.model_load_timeout_seconds,
         )
         self.skill_client = SkillClient(base_url=self.config.skill_server_url)
         self.memory_coordinator = MemoryCoordinator(
@@ -398,6 +406,10 @@ class SimpleAgent:
                 content=self.config.agent_layers.build_system_prompt(),
             ),
         ]
+        try:
+            from core.token_estimator import estimate_message_tokens
+        except ImportError:
+            from agent.core.token_estimator import estimate_message_tokens
         hot_content = self.memory_coordinator.build_hot_message()
         if hot_content:
             messages.append(Message(role="system", content=hot_content))
@@ -405,6 +417,10 @@ class SimpleAgent:
         warm_content = self.memory_coordinator.build_warm_message(user_input, active_skills)
         if warm_content:
             messages.append(Message(role="system", content=warm_content))
+        self._last_mem_tokens = (
+            (estimate_message_tokens(role="system", content=hot_content) if hot_content else 0)
+            + (estimate_message_tokens(role="system", content=warm_content) if warm_content else 0)
+        )
         messages.extend(history_snapshot)
         messages.append(Message(role="user", content=user_input))
         return messages
@@ -605,6 +621,23 @@ class SimpleAgent:
             role="user",
             content=[{"type": "text", "text": message_text}, *image_parts],
         )
+
+    def _extract_delegate_final_response(self, skill_result: dict) -> str:
+        if not isinstance(skill_result, dict):
+            return ""
+        if str(skill_result.get("status", "")).strip().lower() != "ok":
+            return ""
+        if str(skill_result.get("action", "")).strip() != "__delegate__":
+            return ""
+
+        result = skill_result.get("result", {})
+        if not isinstance(result, dict):
+            return ""
+        data = result.get("data", {})
+        if not isinstance(data, dict):
+            return ""
+        final_response = str(data.get("final_response", "")).strip()
+        return final_response
 
     def _image_file_to_data_url(self, image_path: str) -> str:
         resolved_path = Path(image_path).expanduser().resolve()
@@ -889,6 +922,27 @@ class SimpleAgent:
                     step=step + 1,
                     skill_result=skill_result,
                 )
+
+                delegated_final_response = self._extract_delegate_final_response(skill_result)
+                if delegated_final_response:
+                    self._append_history(
+                        persisted_user_input,
+                        delegated_final_response,
+                        assistant_events=turn_history_events,
+                    )
+                    self.memory_coordinator.append_turn(
+                        user_input=str(persisted_user_input or ""),
+                        assistant_response=delegated_final_response,
+                    )
+                    self._log_debug(
+                        "final_response",
+                        debug_context=normalized_debug_context,
+                        step=step + 1,
+                        response=delegated_final_response,
+                        source="delegate_short_circuit",
+                    )
+                    return delegated_final_response
+
                 messages.append(self._build_tool_result_message(skill_result))
 
                 pending_interrupts = self._flush_interrupt_queue()

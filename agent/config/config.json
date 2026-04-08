@@ -4,8 +4,11 @@
     "api_key": "",
     "model": "qwen/qwen3.5-9b",
     "temperature": 0.7,
-    "max_tokens": 25392,
-    "context_window": 32768,
+    "max_tokens": 50000,
+    "context_window": 50000,
+    "ensure_model_loaded": true,
+    "model_load_key": "",
+    "model_load_timeout_seconds": 30,
     "stream": false
   },
   "skill_server": {

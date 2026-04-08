@@ -254,7 +254,13 @@ class Config:
         self.model = self._model_override or self.default_model
         self.temperature = data["llm"]["temperature"]
         self.max_tokens = data["llm"]["max_tokens"]
-        self.context_window = max(1, int(data["llm"].get("context_window", 32768)))
+        self.context_window = max(0, int(data["llm"].get("context_window", 32768)))
+        self.ensure_model_loaded = bool(data["llm"].get("ensure_model_loaded", True))
+        self.model_load_key = str(data["llm"].get("model_load_key", "")).strip()
+        self.model_load_timeout_seconds = max(
+            1.0,
+            float(data["llm"].get("model_load_timeout_seconds", 30.0)),
+        )
         self.default_stream = bool(data["llm"].get("stream", False))
         if self._stream_override is None:
             self.stream = self.default_stream

@@ -198,6 +198,16 @@ def _load_delegate_runtime_config() -> dict:
             or notion_settings.get("delegate_model")
             or llm.get("model", "")
         ).strip(),
+        "context_window": max(0, _parse_int(llm.get("context_window"), default=32768)),
+        "ensure_model_loaded": _parse_bool(
+            llm.get("ensure_model_loaded"),
+            default=True,
+        ),
+        "model_load_key": str(llm.get("model_load_key", "")).strip(),
+        "model_load_timeout_seconds": max(
+            1.0,
+            _parse_float(llm.get("model_load_timeout_seconds"), default=30.0),
+        ),
         "temperature": _parse_float(
             os.getenv("OPENCLAW_NOTION_DELEGATE_TEMPERATURE") or notion_settings.get("delegate_temperature"),
             default=0.1,
@@ -444,6 +454,10 @@ def _delegate_task(runtime_config: dict, *, task: str, context=None, max_steps=N
     specialist_client = LMStudioClient(
         base_url=llm_config["base_url"],
         api_key=llm_config["api_key"],
+        context_window=llm_config["context_window"],
+        ensure_model_loaded=llm_config["ensure_model_loaded"],
+        model_load_key=llm_config["model_load_key"],
+        model_load_timeout_seconds=llm_config["model_load_timeout_seconds"],
     )
     live_tool_names = set()
     live_catalog_loaded = False

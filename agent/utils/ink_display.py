@@ -214,12 +214,25 @@ class InkDisplay:
     def memory(self, text: str) -> None:
         self._emit("memory", text)
 
-    def set_hud(self, model: str = "", token_used: int | None = None, context_window: int = 0) -> None:
+    def set_hud(
+        self,
+        model: str = "",
+        token_used: int | None = None,
+        context_window: int = 0,
+        sys_tokens: int = 0,
+        mem_tokens: int = 0,
+        skl_tokens: int = 0,
+        history_tokens: int = 0,
+    ) -> None:
         self._send({
             "type": "set_hud",
             "model": str(model or "").strip(),
             "token_used": token_used if token_used is not None else 0,
             "context_window": max(0, int(context_window or 0)),
+            "sys_tokens": max(0, int(sys_tokens or 0)),
+            "mem_tokens": max(0, int(mem_tokens or 0)),
+            "skl_tokens": max(0, int(skl_tokens or 0)),
+            "history_tokens": max(0, int(history_tokens or 0)),
         })
 
     def set_waiting(self, text: str) -> None:

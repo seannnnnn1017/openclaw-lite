@@ -50,6 +50,19 @@ class AgentLayers:
             skill_sections
         )
 
+    def build_base_text(self) -> str:
+        """Core prompt without skills — used for token breakdown."""
+        return f"[IDENTITY]\n{self.identity}\n\n[SYSTEM RULES]\n{self.system_rules}\n\n[BOUNDARIES]\n{self.boundaries}".strip()
+
+    def build_skills_text(self) -> str:
+        """Skills section only — used for token breakdown."""
+        parts = []
+        for skill in self.skills:
+            t = str((skill.get("manifest") or {}).get("text", "")).strip()
+            if t:
+                parts.append(t)
+        return "\n\n".join(parts)
+
     @staticmethod
     def from_json(data: Dict):
         return AgentLayers(

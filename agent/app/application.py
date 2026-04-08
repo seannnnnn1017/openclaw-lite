@@ -149,7 +149,14 @@ class AgentApplication:
     def _build_agent_session(self) -> SimpleAgent:
         return SimpleAgent(
             config=self.config,
-            client=LMStudioClient(base_url=self.config.base_url, api_key=self.config.api_key),
+            client=LMStudioClient(
+                base_url=self.config.base_url,
+                api_key=self.config.api_key,
+                context_window=self.config.context_window,
+                ensure_model_loaded=self.config.ensure_model_loaded,
+                model_load_key=self.config.model_load_key,
+                model_load_timeout_seconds=self.config.model_load_timeout_seconds,
+            ),
             display=self.display,
             debug_logger=self.debug_logger,
         )
@@ -160,6 +167,10 @@ class AgentApplication:
             model=self.config.model,
             token_used=token_summary["base_total_tokens"],
             context_window=self.config.context_window,
+            sys_tokens=token_summary.get("sys_tokens", 0),
+            mem_tokens=token_summary.get("mem_tokens", 0),
+            skl_tokens=token_summary.get("skl_tokens", 0),
+            history_tokens=token_summary.get("history_tokens", 0),
         )
 
     def reload_runtime(self) -> Path:
@@ -266,46 +277,12 @@ class AgentApplication:
         self.scheduler.start()
         self.telegram_runtime.start()
 
-        _exit_pending: bool = False
-        _exit_timer: threading.Timer | None = None
-
-        def _arm_exit():
-            nonlocal _exit_pending, _exit_timer
-            _exit_pending = True
-            if _exit_timer:
-                _exit_timer.cancel()
-
-            def _cancel():
-                nonlocal _exit_pending, _exit_timer
-                _exit_pending = False
-                _exit_timer = None
-                self.display.system("Exit cancelled.")
-
-            _exit_timer = threading.Timer(3.0, _cancel)
-            _exit_timer.daemon = True
-            _exit_timer.start()
-            self.display.system("Press Ctrl+C again within 3s to exit.")
-
-        def _disarm_exit():
-            nonlocal _exit_pending, _exit_timer
-            if _exit_timer:
-                _exit_timer.cancel()
-                _exit_timer = None
-            _exit_pending = False
-
         try:
             while True:
                 try:
                     user_input = self.display.read_input().strip()
                 except KeyboardInterrupt:
-                    if _exit_pending:
-                        _disarm_exit()
-                        break
-                    _arm_exit()
-                    continue
-
-                if user_input and _exit_pending:
-                    _disarm_exit()
+                    break
 
                 if not user_input:
                     continue
@@ -344,17 +321,11 @@ class AgentApplication:
                     try:
                         queued = self.display.try_read_input(timeout=0.15)
                     except KeyboardInterrupt:
-                        if _exit_pending:
-                            _disarm_exit()
-                            agent_interrupted = True
-                            break
-                        _arm_exit()
-                        continue
+                        agent_interrupted = True
+                        break
                     if queued is not None:
                         queued = queued.strip()
                         if queued:
-                            if _exit_pending:
-                                _disarm_exit()
                             self.main_agent.enqueue_interrupt(queued)
                             self.display.system(
                                 f"Queued (injecting after next tool step): {queued[:80]}"
@@ -373,7 +344,6 @@ class AgentApplication:
                 elif _result["reply"] is not None:
                     self.display.agent(_result["reply"])
         finally:
-            _disarm_exit()
             self.debug_logger.log_event("session_stop")
             self.telegram_runtime.stop()
             self.scheduler.stop()

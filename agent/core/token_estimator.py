@@ -103,3 +103,31 @@ def summarize_prompt_and_history(system_prompt: str, history_snapshot) -> dict:
         "history_messages": len(history_snapshot),
         "method": "estimated",
     }
+
+
+def summarize_with_breakdown(
+    base_text: str,
+    skills_text: str,
+    mem_tokens: int,
+    history_snapshot,
+) -> dict:
+    """Token summary with sys/skl/mem/history breakdown."""
+    sys_tokens = estimate_message_tokens(role="system", content=base_text)
+    skl_tokens = estimate_message_tokens(role="system", content=skills_text) if skills_text else 0
+    history_tokens = sum(
+        estimate_message_tokens(
+            role=str(getattr(m, "role", "")),
+            content=getattr(m, "content", None),
+        )
+        for m in history_snapshot
+    )
+    total = sys_tokens + skl_tokens + mem_tokens + history_tokens
+    return {
+        "sys_tokens": sys_tokens,
+        "skl_tokens": skl_tokens,
+        "mem_tokens": mem_tokens,
+        "history_tokens": history_tokens,
+        "base_total_tokens": total,
+        "history_messages": len(history_snapshot),
+        "method": "estimated",
+    }

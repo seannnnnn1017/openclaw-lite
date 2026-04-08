@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, memo } from 'react';
+import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
 import { render, Box, Text, Static, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import net from 'net';
@@ -63,8 +63,14 @@ const WaitingSpinner = memo(function WaitingSpinner({ text }) {
   );
 });
 
+function buildMiniBar(tokens, total, width) {
+  if (total <= 0 || tokens <= 0) return '░'.repeat(width);
+  const filled = Math.min(width, Math.round((tokens / total) * width));
+  return '█'.repeat(filled) + '░'.repeat(width - filled);
+}
+
 // ── Isolated: only re-renders every second ───────────────────────────────────
-const HudBar = memo(function HudBar({ modelName, tokenUsed, contextWindow, cols }) {
+const HudBar = memo(function HudBar({ modelName, tokenUsed, contextWindow, sysTokens, memTokens, sklTokens, historyTokens, cols }) {
   const [now, setNow] = useState(new Date());
 
   useEffect(() => {
@@ -73,11 +79,20 @@ const HudBar = memo(function HudBar({ modelName, tokenUsed, contextWindow, cols 
   }, []);
 
   const hudText = buildHudText(modelName, tokenUsed, contextWindow, now);
-  const ruleLen = Math.max(0, cols - hudText.length - 4);
+  const hasBreakdown = tokenUsed > 0;
+  const breakdownTotal = tokenUsed || 1;
 
-  return h(Box, null,
-    h(Text, { color: 'gray', dimColor: true }, '═'.repeat(ruleLen)),
-    h(Text, { color: 'cyan' }, `[ ${hudText} ]`)
+  const breakdownLine = hasBreakdown
+    ? `${INDENT}sys:${buildMiniBar(sysTokens, breakdownTotal, 6)} ${fmtK(sysTokens)}  ` +
+      `mem:${buildMiniBar(memTokens, breakdownTotal, 6)} ${fmtK(memTokens)}  ` +
+      `skl:${buildMiniBar(sklTokens, breakdownTotal, 6)} ${fmtK(sklTokens)}  ` +
+      `hist:${buildMiniBar(historyTokens, breakdownTotal, 6)} ${fmtK(historyTokens)}`
+    : null;
+
+  return h(Box, { flexDirection: 'column' },
+    h(Text, { color: 'gray', dimColor: true }, '═'.repeat(cols)),
+    h(Text, { color: 'cyan' }, `[ ${hudText} ]`),
+    breakdownLine && h(Text, { color: 'gray' }, breakdownLine)
   );
 });
 
@@ -111,9 +126,15 @@ function App() {
   const [modelName, setModelName]       = useState('');
   const [tokenUsed, setTokenUsed]       = useState(0);
   const [contextWindow, setContextWindow] = useState(0);
+  const [sysTokens, setSysTokens]         = useState(0);
+  const [memTokens, setMemTokens]         = useState(0);
+  const [sklTokens, setSklTokens]         = useState(0);
+  const [historyTokens, setHistoryTokens] = useState(0);
   const [inputHistory, setInputHistory] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [savedInput, setSavedInput]     = useState('');
+  const [ctrlCPending, setCtrlCPending] = useState(false);
+  const ctrlCTimer = useRef(null);
   const { exit } = useApp();
 
   // IPC
@@ -137,6 +158,10 @@ function App() {
             if (ev.model !== undefined)          setModelName(ev.model);
             if (ev.token_used !== undefined)     setTokenUsed(ev.token_used);
             if (ev.context_window !== undefined) setContextWindow(ev.context_window);
+            if (ev.sys_tokens !== undefined)     setSysTokens(ev.sys_tokens);
+            if (ev.mem_tokens !== undefined)     setMemTokens(ev.mem_tokens);
+            if (ev.skl_tokens !== undefined)     setSklTokens(ev.skl_tokens);
+            if (ev.history_tokens !== undefined) setHistoryTokens(ev.history_tokens);
           } else if (ev.type === 'set_model') {
             setModelName(ev.text || '');
           } else if (ev.type === 'exit') {
@@ -154,7 +179,14 @@ function App() {
   // Global key handler: Ctrl+C forwarded to Python, arrow keys for history
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
-      process.stdout.write(JSON.stringify({ type: 'ctrl_c' }) + '\n');
+      if (ctrlCPending) {
+        clearTimeout(ctrlCTimer.current);
+        setCtrlCPending(false);
+        process.stdout.write(JSON.stringify({ type: 'ctrl_c' }) + '\n');
+      } else {
+        setCtrlCPending(true);
+        ctrlCTimer.current = setTimeout(() => setCtrlCPending(false), 2000);
+      }
       return;
     }
     if (key.upArrow) {
@@ -202,11 +234,12 @@ function App() {
     // Live area: only these lines redraw on every keystroke
     h(WaitingSpinner, { text: waiting }),
     h(Text, { color: 'gray', dimColor: true }, '═'.repeat(cols)),
-    h(Box, null,
+    h(Box, { width: '100%' },
       h(Text, { color: 'greenBright', bold: true }, '> '),
       h(TextInput, { value: inputValue, onChange: setInputValue, onSubmit: handleSubmit })
     ),
-    h(HudBar, { modelName, tokenUsed, contextWindow, cols })
+    h(HudBar, { modelName, tokenUsed, contextWindow, sysTokens, memTokens, sklTokens, historyTokens, cols }),
+    ctrlCPending && h(Text, { color: 'yellow' }, `${INDENT}Press ctrl+c again to exit`)
   );
 }
 

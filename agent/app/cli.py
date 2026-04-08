@@ -106,6 +106,15 @@ def format_status(config, agent) -> str:
     return "\n".join(
         [
             f"Model: {describe_model(config)}",
+            (
+                "LM Studio context window: "
+                + (str(config.context_window) if config.context_window > 0 else "disabled")
+                + (
+                    "; auto-manage=on"
+                    if getattr(config, "ensure_model_loaded", False)
+                    else "; auto-manage=off"
+                )
+            ),
             f"History messages: {agent.history_size()}",
             memory_line,
             f"System prompt tokens ({token_summary['method']}): {token_summary['system_prompt_tokens']}",
