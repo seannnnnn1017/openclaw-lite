@@ -36,7 +36,7 @@ User request:
 
 Tool JSON:
 ```json
-{"skill":"notion-basic","action":"delegate_task","args":{"task":"Create one schedule entry in Notion for tomorrow at 10:00 with the title 台北看房.","context":{"database_id":"dca9bd99-bf81-412b-9978-6996c72c5a37","data_source_id":"f199688f-e08a-48b5-a0db-f1e4b683dae4","timezone":"Asia/Taipei","user_intent":"calendar entry creation"}}}
+{"skill":"notion-basic","action":"delegate_task","args":{"task":"Create one schedule entry in Notion for tomorrow at 10:00 with the title 台北看房.","context":{"database_id":"<preferred_schedule_database_id>","data_source_id":"<preferred_schedule_data_source_id>","timezone":"Asia/Taipei","user_intent":"calendar entry creation"}}}
 ```
 
 User request:
@@ -70,7 +70,7 @@ User request:
 
 Tool JSON:
 ```json
-{"skill":"notion-basic","action":"tools/call","args":{"name":"API-retrieve-a-page","arguments":{"page_id":"32e5aafd-db3b-80a5-a0eb-c5d49ec41b5f"}}}
+{"skill":"notion-basic","action":"tools/call","args":{"name":"API-retrieve-a-page","arguments":{"page_id":"<page_id>"}}}
 ```
 
 User request:
@@ -78,7 +78,7 @@ User request:
 
 Tool JSON:
 ```json
-{"skill":"notion-basic","action":"tools/call","args":{"name":"API-get-block-children","arguments":{"block_id":"32e5aafd-db3b-80a5-a0eb-c5d49ec41b5f"}}}
+{"skill":"notion-basic","action":"tools/call","args":{"name":"API-get-block-children","arguments":{"block_id":"<block_id>"}}}
 ```
 
 User request:
@@ -86,7 +86,7 @@ User request:
 
 Tool JSON:
 ```json
-{"skill":"notion-basic","action":"tools/call","args":{"name":"API-retrieve-a-data-source","arguments":{"data_source_id":"f199688f-e08a-48b5-a0db-f1e4b683dae4"}}}
+{"skill":"notion-basic","action":"tools/call","args":{"name":"API-retrieve-a-data-source","arguments":{"data_source_id":"<data_source_id>"}}}
 ```
 
 User request:
@@ -94,7 +94,7 @@ User request:
 
 Tool JSON:
 ```json
-{"skill":"notion-basic","action":"tools/call","args":{"name":"API-query-data-source","arguments":{"data_source_id":"f199688f-e08a-48b5-a0db-f1e4b683dae4","page_size":20}}}
+{"skill":"notion-basic","action":"tools/call","args":{"name":"API-query-data-source","arguments":{"data_source_id":"<data_source_id>","page_size":20}}}
 ```
 
 User request:
@@ -102,12 +102,12 @@ User request:
 
 Step 1 Tool JSON:
 ```json
-{"skill":"notion-basic","action":"tools/call","args":{"name":"API-retrieve-a-data-source","arguments":{"data_source_id":"f199688f-e08a-48b5-a0db-f1e4b683dae4"}}}
+{"skill":"notion-basic","action":"tools/call","args":{"name":"API-retrieve-a-data-source","arguments":{"data_source_id":"<preferred_schedule_data_source_id>"}}}
 ```
 
 Step 2 Tool JSON:
 ```json
-{"skill":"notion-basic","action":"tools/call","args":{"name":"API-post-page","arguments":{"parent":{"database_id":"dca9bd99-bf81-412b-9978-6996c72c5a37"},"properties":{"標題":{"title":[{"type":"text","text":{"content":"台北看房"}}]},"日期":{"date":{"start":"2026-03-31T10:00:00+08:00"}},"狀態":{"select":{"name":"未開始"}},"備註":{"rich_text":[{"type":"text","text":{"content":"明天上午十點看房"}}]}}}}}
+{"skill":"notion-basic","action":"tools/call","args":{"name":"API-post-page","arguments":{"parent":{"database_id":"<preferred_schedule_database_id>"},"properties":{"標題":{"title":[{"type":"text","text":{"content":"台北看房"}}]},"日期":{"date":{"start":"2026-03-31T10:00:00+08:00"}},"狀態":{"select":{"name":"未開始"}},"備註":{"rich_text":[{"type":"text","text":{"content":"明天上午十點看房"}}]}}}}}
 ```
 
 User request:
@@ -115,7 +115,7 @@ User request:
 
 Tool JSON:
 ```json
-{"skill":"notion-basic","action":"tools/call","args":{"name":"API-patch-page","arguments":{"page_id":"3305aafd-db3b-8171-9287-cab75bcb8083","properties":{"狀態":{"select":{"name":"完成"}}}}}}
+{"skill":"notion-basic","action":"tools/call","args":{"name":"API-patch-page","arguments":{"page_id":"<page_id>","properties":{"狀態":{"select":{"name":"完成"}}}}}}
 ```
 
 User request:
@@ -123,7 +123,7 @@ User request:
 
 Tool JSON:
 ```json
-{"skill":"notion-basic","action":"tools/call","args":{"name":"API-create-a-comment","arguments":{"parent":{"page_id":"32e5aafd-db3b-80a5-a0eb-c5d49ec41b5f"},"rich_text":[{"type":"text","text":{"content":"Hello MCP"}}]}}}
+{"skill":"notion-basic","action":"tools/call","args":{"name":"API-create-a-comment","arguments":{"parent":{"page_id":"<page_id>"},"rich_text":[{"type":"text","text":{"content":"Hello MCP"}}]}}}
 ```
 
 User request:
@@ -143,12 +143,12 @@ Reason: `tools/list` is a skill action, not a live tool name.
 
 - Do not do this:
 ```json
-{"skill":"notion-basic","action":"tools/call","args":{"name":"API-post-page","arguments":{"database_id":"dca9bd99-bf81-412b-9978-6996c72c5a37","properties":{}}}}
+{"skill":"notion-basic","action":"tools/call","args":{"name":"API-post-page","arguments":{"database_id":"<database_id>","properties":{}}}}
 ```
 Reason: `API-post-page` must place the parent under `parent.database_id`.
 
 - Do not do this:
 ```json
-{"skill":"notion-basic","action":"tools/call","args":{"name":"API-post-page","arguments":{"parent":{"database_id":"dca9bd99-bf81-412b-9978-6996c72c5a37"},"properties":{"標題":"台北看房"}}}}
+{"skill":"notion-basic","action":"tools/call","args":{"name":"API-post-page","arguments":{"parent":{"database_id":"<database_id>"},"properties":{"標題":"台北看房"}}}}
 ```
 Reason: use raw Notion property objects such as `title`, `date`, `select`, and `rich_text`.

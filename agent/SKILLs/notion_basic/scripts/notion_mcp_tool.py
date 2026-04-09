@@ -349,7 +349,7 @@ Rules:
 - If a tool appears in the live catalog, you may use it. Do not limit yourself to a small hardcoded subset.
 - Use `tools/list` to discover or refresh the live catalog whenever needed.
 - After a successful `tools/list`, do not invent tool names.
-- For the built-in schedule database, `database_id` and `data_source_id` are already known.
+- Treat caller-provided Notion target IDs in `context` as authoritative; do not assume hidden personal defaults.
 - If you need exact schema property names, retrieve the data source once, then continue to the read/write step.
 - Preserve raw Notion argument shapes.
 - For `API-post-page`, place the destination under `parent.database_id`.
@@ -378,10 +378,6 @@ def _build_delegate_task_packet(*, task: str, context: dict, live_tool_names: li
         "task": str(task or "").strip(),
         "context": context,
         "known_live_tools": live_tool_names,
-        "built_in_schedule_database": {
-            "database_id": "dca9bd99-bf81-412b-9978-6996c72c5a37",
-            "data_source_id": "f199688f-e08a-48b5-a0db-f1e4b683dae4",
-        },
     }
     return (
         "Delegated Notion task packet:\n"

@@ -414,9 +414,12 @@ class SimpleAgent:
         if hot_content:
             messages.append(Message(role="system", content=hot_content))
         active_skills = [str(s.get("name", "")) for s in getattr(self.config, "skills", [])]
-        warm_content = self.memory_coordinator.build_warm_message(user_input, active_skills)
+        warm_content, warm_files = self.memory_coordinator.build_warm_message(user_input, active_skills)
         if warm_content:
             messages.append(Message(role="system", content=warm_content))
+        if self.display:
+            labels = "".join(f"[{f}]" for f in warm_files if f)
+            self.display.memory(f"topics {labels}" if labels else "topics (none)")
         self._last_mem_tokens = (
             (estimate_message_tokens(role="system", content=hot_content) if hot_content else 0)
             + (estimate_message_tokens(role="system", content=warm_content) if warm_content else 0)
@@ -588,12 +591,19 @@ class SimpleAgent:
         if candidate.startswith("```") and candidate.endswith("```"):
             lines = candidate.splitlines()
             candidate = "\n".join(lines[1:-1]).strip()
-        try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError:
-            return None
-        if isinstance(payload, dict) and payload.get("memory") in {"write", "search"}:
+
+        def _is_memory(payload) -> bool:
+            return isinstance(payload, dict) and payload.get("memory") in {"write", "search"}
+
+        payload = self._try_parse_structured_payload(candidate)
+        if _is_memory(payload):
             return payload
+
+        for payload_text, _ in reversed(list(self._iter_embedded_skill_payload_candidates(candidate))):
+            payload = self._try_parse_structured_payload(payload_text)
+            if _is_memory(payload):
+                return payload
+
         return None
 
     def _build_tool_result_message(self, skill_result: dict):
@@ -753,6 +763,9 @@ class SimpleAgent:
                 memory_command = self._parse_memory_command(cleaned_response or response)
                 if memory_command:
                     mem_result = self.memory_coordinator.handle_memory_command(memory_command)
+                    op = memory_command.get("memory", "")
+                    if op == "search":
+                        self.display.memory(f"search [{memory_command.get('query') or '?'}]")
                     messages.append(Message(role="assistant", content=json.dumps(memory_command, ensure_ascii=False)))
                     messages.append(Message(role="user", content=f"Memory operation result:\n{mem_result}\n\nContinue answering the user."))
                     continue

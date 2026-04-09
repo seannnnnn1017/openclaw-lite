@@ -16,14 +16,7 @@
   },
   "memory": {
     "enabled": true,
-    "store_path": "data/memories/skill-memory.json",
-    "max_entries": 200,
-    "retrieve_limit": 6,
-    "always_include_limit": 3,
-    "extract_after_turn": true,
-    "extractor_max_tokens": 600,
-    "extractor_model": "",
-    "extractor_no_think": true
+    "extractor_model": ""
   },
   "telegram": {
     "enabled": true,
@@ -41,6 +34,7 @@
   "prompt_paths": {
     "identity": "prompts/identity.md",
     "system_rules": "prompts/system_rules.md",
+    "memory_rules": "prompts/memory_rules.md",
     "boundaries": "prompts/boundaries.md"
   }
 }

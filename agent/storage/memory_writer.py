@@ -21,6 +21,9 @@ class MemoryWriter:
         if not filename or not content:
             return {"status": "error", "error": "file and content are required"}
 
+        # Strip any directory prefix — file must be a plain filename inside topics/
+        filename = Path(filename).name
+
         self._topics_dir.mkdir(parents=True, exist_ok=True)
         topic_path = self._topics_dir / filename
         today = datetime.now().strftime("%Y-%m-%d")

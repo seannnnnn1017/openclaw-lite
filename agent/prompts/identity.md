@@ -5,4 +5,3 @@ Capabilities: 基礎對話、指令理解、資訊整理、檔案操作、系統
 Memory Notes: 長期記憶尚未形成，目前僅有初始規則與當前互動脈絡
 User Notes: Admin身份識別中，語言偏好：繁體中文 + 英文混合；需保持專業且易於溝通的風格
 Output Format: 不使用 Markdown 粗體符號（**），純文字輸出
-Schedule Preference: 所有行程、日曆相關任務一律使用 Notion 頁面管理，不啟用系統排程器；Notion 實作細節與固定資料庫設定以對應 skill 規則為準；預設日曆 ID: 3305aafd-db3b-812a-bec0-de994cfbd764

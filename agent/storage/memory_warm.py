@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
+import urllib.error
+import urllib.request
 from pathlib import Path
-
-try:
-    from core.schemas import ChatRequest, Message
-except ImportError:
-    from agent.core.schemas import ChatRequest, Message
 
 _SELECTOR_SYSTEM = """\
 You are selecting memory files to load for an AI agent.
@@ -28,26 +26,38 @@ class MemoryWarmSelector:
         self._config = config
         self.max_files = 5
 
-    def select_and_load(self, user_input: str, active_skills: list[str]) -> str:
+    def select_and_load(self, user_input: str, active_skills: list[str]) -> tuple[str, list[str]]:
         if not self._index_path.exists() or not self._topics_dir.exists():
-            return ""
+            return "", []
         index_content = self._index_path.read_text(encoding="utf-8").strip()
         if not index_content:
-            return ""
+            return "", []
         available = [f.name for f in self._topics_dir.glob("*.md")]
         if not available:
-            return ""
+            return "", []
 
         selected = self._call_selector(index_content, user_input, active_skills, available)
         if not selected:
-            return ""
+            return "", []
 
         parts: list[str] = []
+        loaded: list[str] = []
         for filename in selected:
             path = self._topics_dir / filename
             if path.exists():
                 parts.append(path.read_text(encoding="utf-8").strip())
-        return "\n\n---\n\n".join(parts) if parts else ""
+                loaded.append(filename)
+        content = "\n\n---\n\n".join(parts) if parts else ""
+        return content, loaded
+
+    def _native_chat_url(self) -> str:
+        """Derive LM Studio native /api/v1/chat URL from the configured base_url."""
+        base = str(getattr(self._config, "base_url", "http://localhost:1234/v1")).rstrip("/")
+        # base_url is typically http://host:port/v1 — strip the /v1 suffix
+        if base.endswith("/v1"):
+            return base[:-3] + "/api/v1/chat"
+        # Fallback: replace last /v1 occurrence
+        return re.sub(r"/v1(/.*)?$", "/api/v1/chat", base)
 
     def _call_selector(
         self,
@@ -57,7 +67,9 @@ class MemoryWarmSelector:
         available: list[str],
     ) -> list[str]:
         skills_str = ", ".join(active_skills) if active_skills else "none"
-        user_prompt = (
+        # Combine system + user into a single input string for the native endpoint
+        combined_input = (
+            f"{_SELECTOR_SYSTEM}\n\n"
             f"Currently active skills: {skills_str}\n"
             f"Available files: {json.dumps(available)}\n\n"
             f"Memory index:\n{index}\n\n"
@@ -67,19 +79,38 @@ class MemoryWarmSelector:
             str(getattr(self._config, "memory_extractor_model", "") or "").strip()
             or self._config.model
         )
-        request = ChatRequest(
-            model=extractor_model,
-            messages=[
-                Message(role="system", content=_SELECTOR_SYSTEM),
-                Message(role="user", content=user_prompt),
-            ],
-            temperature=0.0,
-            max_tokens=200,
-            stream=False,
-        )
+        payload = {
+            "model": extractor_model,
+            "input": combined_input,
+            "temperature": 0.0,
+            "max_output_tokens": 256,
+            "reasoning": "off",
+        }
         try:
-            response = self._client.chat(request)
-            parsed = json.loads(response.strip())
+            req = urllib.request.Request(
+                self._native_chat_url(),
+                data=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                response = json.loads(resp.read().decode("utf-8"))
+
+            # Extract text from output[].content (native LM Studio response format)
+            raw = ""
+            for item in response.get("output", []):
+                if isinstance(item, dict) and item.get("type") == "message":
+                    raw = str(item.get("content") or "").strip()
+                    if raw:
+                        break
+
+            # Parse JSON array — no think-block stripping needed with reasoning=off
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                matches = list(re.finditer(r'\[.*?\]', raw, re.DOTALL))
+                parsed = json.loads(matches[-1].group()) if matches else []
+
             if isinstance(parsed, list):
                 return [str(f) for f in parsed if isinstance(f, str) and f in available][: self.max_files]
         except Exception:

@@ -10,10 +10,9 @@ metadata: { "openclaw": { "requires": { "bins": ["python"] } } }
 
 Use this skill when the user wants to read, search, create, update, move, or comment on Notion content through the live Notion MCP server.
 
-Built-in schedule database for calendar-style tasks:
-- `database_id`: `dca9bd99-bf81-412b-9978-6996c72c5a37`
-- `data_source_id`: `f199688f-e08a-48b5-a0db-f1e4b683dae4`
-- In a Notion URL for this database, `?v=` is the `view_id`, not the `database_id`.
+Workspace-specific Notion target IDs are personal preferences, not skill rules.
+Store those defaults in `agent/data/memories/topics/*.md` and pass them through `context` when relevant.
+For Notion URLs, `?v=` is the `view_id`, not the `database_id`.
 
 This skill is selected by the agent and executed by the skill server.
 When this skill is needed, reply with exactly one JSON object and nothing else.
@@ -59,7 +58,7 @@ Core execution logic:
 - If a tool appears in the live catalog, it is allowed to use it.
 - The examples in this skill are representative, not exhaustive.
 - Do not assume the tool catalog is limited to the examples in this file.
-- For the built-in schedule database, `database_id` and `data_source_id` are already known. Do not search the workspace just to rediscover them.
+- Workspace-specific `database_id` / `data_source_id` values should come from caller-provided `context` or memory topics, not from hardcoded IDs in this skill file.
 - If you need exact property names or select options, retrieve the data source schema once and continue to the write or query step.
 
 Current live catalog snapshot observed from this environment on 2026-03-30:
@@ -134,9 +133,10 @@ Read schema from a database id:
 2. Read `data_sources[].id`
 3. `tools/call` -> `API-retrieve-a-data-source`
 
-Create one row in the built-in schedule database:
-1. If the current property schema is not already known in this task, call `API-retrieve-a-data-source` with `f199688f-e08a-48b5-a0db-f1e4b683dae4`
-2. Build `API-post-page`
-3. Put the row parent under `parent.database_id`
-4. Use exact schema property names
-5. Preserve time and time ranges in `date.start` and `date.end` whenever the live tool accepts them
+Create one row in the preferred schedule database:
+1. Use the preferred `database_id` / `data_source_id` already present in `context` or loaded from personal memory topics
+2. If the current property schema is not already known in this task, call `API-retrieve-a-data-source` with that `data_source_id`
+3. Build `API-post-page`
+4. Put the row parent under `parent.database_id`
+5. Use exact schema property names
+6. Preserve time and time ranges in `date.start` and `date.end` whenever the live tool accepts them

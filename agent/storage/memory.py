@@ -19,7 +19,7 @@ class MemoryCoordinator:
     """Three-tier memory coordinator: Hot (MEMORY.md) / Warm (topic files) / Cold (.jsonl transcripts)."""
 
     def __init__(self, *, config, client, display=None, debug_logger=None):
-        memories_dir = Path(getattr(config, "memory_store_path", "")).parent
+        memories_dir = Path(getattr(config, "memory_store_path", "agent/data/memories"))
         self.enabled = bool(getattr(config, "memory_enabled", True))
         self._hot = MemoryHotLayer(memories_dir)
         self._warm = MemoryWarmSelector(memories_dir, client, config)
@@ -37,9 +37,9 @@ class MemoryCoordinator:
             return ""
         return self._hot.load()
 
-    def build_warm_message(self, user_input: str, active_skills: list[str]) -> str:
+    def build_warm_message(self, user_input: str, active_skills: list[str]) -> tuple[str, list[str]]:
         if not self.enabled:
-            return ""
+            return "", []
         return self._warm.select_and_load(user_input, active_skills)
 
     def append_turn(self, user_input: str, assistant_response: str) -> None:
