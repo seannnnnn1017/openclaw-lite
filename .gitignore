@@ -7,10 +7,10 @@ agent/data/system/secrets.local.json
 agent/data/system/notion_skill_config.local.json
 agent/data/telegram_media/
 agent/data/notion_downloads/
-agent/SKILLs/notion_basic/scripts/temporary_data/
+agent/SKILLs/*/scripts/temporary_data/
 
-# Local settings (Claude Code)
-.claude/settings.local.json
+# Claude Code internal directory
+.claude/
 
 # All *.local.json patterns (catch future local config files)
 *.local.json
