@@ -1,0 +1,26 @@
+{
+  "skills": [
+    {
+      "name": "workspace-context",
+      "enabled": true,
+      "execution_mode": "default",
+      "path": "workspace_context",
+      "auto_context": {
+        "action": "info",
+        "args": {},
+        "trigger": {
+          "mode": "always"
+        },
+        "once_per_session": true,
+        "once_per_turn": false,
+        "success_prompt": "Internal runtime note: workspace path context was resolved automatically at session start by skill `{skill_name}`.\nUse the paths below to construct correct file paths with file-control.\nDo NOT use double-prefix paths like 'agent/agent/...'.\nDo not mention this lookup unless it affects the answer.\nPath context JSON:\n{result_json}",
+        "error_prompt": "Internal runtime note: skill `{skill_name}` failed to resolve workspace path context.\nIf a file path is needed, call this skill explicitly before using file-control.\nError JSON:\n{result_json}"
+      },
+      "tool": {
+        "type": "python_function",
+        "module": "agent.SKILLs.workspace_context.scripts.workspace_tool",
+        "function": "run"
+      }
+    }
+  ]
+}

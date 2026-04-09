@@ -149,7 +149,14 @@ class AgentApplication:
     def _build_agent_session(self) -> SimpleAgent:
         return SimpleAgent(
             config=self.config,
-            client=LMStudioClient(base_url=self.config.base_url, api_key=self.config.api_key),
+            client=LMStudioClient(
+                base_url=self.config.base_url,
+                api_key=self.config.api_key,
+                context_window=self.config.context_window,
+                ensure_model_loaded=self.config.ensure_model_loaded,
+                model_load_key=self.config.model_load_key,
+                model_load_timeout_seconds=self.config.model_load_timeout_seconds,
+            ),
             display=self.display,
             debug_logger=self.debug_logger,
         )
@@ -160,6 +167,10 @@ class AgentApplication:
             model=self.config.model,
             token_used=token_summary["base_total_tokens"],
             context_window=self.config.context_window,
+            sys_tokens=token_summary.get("sys_tokens", 0),
+            mem_tokens=token_summary.get("mem_tokens", 0),
+            skl_tokens=token_summary.get("skl_tokens", 0),
+            history_tokens=token_summary.get("history_tokens", 0),
         )
 
     def reload_runtime(self) -> Path:
@@ -268,7 +279,11 @@ class AgentApplication:
 
         try:
             while True:
-                user_input = self.display.read_input().strip()
+                try:
+                    user_input = self.display.read_input().strip()
+                except KeyboardInterrupt:
+                    break
+
                 if not user_input:
                     continue
                 if user_input.lower() in {"exit", "quit"}:
@@ -301,8 +316,13 @@ class AgentApplication:
                 )
                 agent_thread.start()
 
+                agent_interrupted = False
                 while agent_thread.is_alive():
-                    queued = self.display.try_read_input(timeout=0.15)
+                    try:
+                        queued = self.display.try_read_input(timeout=0.15)
+                    except KeyboardInterrupt:
+                        agent_interrupted = True
+                        break
                     if queued is not None:
                         queued = queued.strip()
                         if queued:
@@ -310,6 +330,10 @@ class AgentApplication:
                             self.display.system(
                                 f"Queued (injecting after next tool step): {queued[:80]}"
                             )
+
+                if agent_interrupted:
+                    self.display.clear_waiting()
+                    break
 
                 agent_thread.join()
                 self.display.clear_waiting()

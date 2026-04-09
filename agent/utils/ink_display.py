@@ -46,14 +46,19 @@ class InkDisplay:
         self._server.listen(1)
         port = self._server.getsockname()[1]
 
-        # Spawn Ink subprocess
+        # Spawn Ink subprocess.
+        # On Windows use CREATE_NEW_PROCESS_GROUP so Ctrl+C (CTRL_C_EVENT) is
+        # not forwarded to the Node.js child — Python handles the signal itself.
         ui_script = self._UI_DIR / "index.js"
+        import sys as _sys
+        _creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP if _sys.platform == "win32" else 0
         self._proc = subprocess.Popen(
             ["node", str(ui_script)],
             stdin=None,              # inherit: real TTY for keyboard
             stdout=subprocess.PIPE,  # pipe: Python reads user input
             stderr=None,             # inherit: Ink renders UI here
             env={**os.environ, "OPENCLAW_IPC_PORT": str(port), "FORCE_COLOR": "3"},
+            creationflags=_creation_flags,
         )
 
         # Accept Ink's connection (5s timeout)
@@ -209,12 +214,25 @@ class InkDisplay:
     def memory(self, text: str) -> None:
         self._emit("memory", text)
 
-    def set_hud(self, model: str = "", token_used: int | None = None, context_window: int = 0) -> None:
+    def set_hud(
+        self,
+        model: str = "",
+        token_used: int | None = None,
+        context_window: int = 0,
+        sys_tokens: int = 0,
+        mem_tokens: int = 0,
+        skl_tokens: int = 0,
+        history_tokens: int = 0,
+    ) -> None:
         self._send({
             "type": "set_hud",
             "model": str(model or "").strip(),
             "token_used": token_used if token_used is not None else 0,
             "context_window": max(0, int(context_window or 0)),
+            "sys_tokens": max(0, int(sys_tokens or 0)),
+            "mem_tokens": max(0, int(mem_tokens or 0)),
+            "skl_tokens": max(0, int(skl_tokens or 0)),
+            "history_tokens": max(0, int(history_tokens or 0)),
         })
 
     def set_waiting(self, text: str) -> None:
@@ -243,6 +261,9 @@ class InkDisplay:
     # User input
     # ------------------------------------------------------------------
 
+    # Sentinel: Ink forwarded a Ctrl+C keystroke — caller should raise KeyboardInterrupt.
+    _CTRL_C = object()
+
     def _read_input_loop(self) -> None:
         """Background thread: reads lines from Ink stdout into _input_queue."""
         while True:
@@ -253,18 +274,31 @@ class InkDisplay:
             if not line:
                 break
             try:
-                text = json.loads(line.decode("utf-8").strip()).get("text", "")
-                self._input_queue.put(text)
+                ev = json.loads(line.decode("utf-8").strip())
+                if ev.get("type") == "ctrl_c":
+                    self._input_queue.put(InkDisplay._CTRL_C)
+                else:
+                    self._input_queue.put(ev.get("text", ""))
             except Exception:
                 pass
 
     def read_input(self) -> str:
-        """Block until the user submits a message."""
-        return self._input_queue.get()
+        """Block until the user submits a message, or raise KeyboardInterrupt on Ctrl+C."""
+        while True:
+            try:
+                item = self._input_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if item is InkDisplay._CTRL_C:
+                raise KeyboardInterrupt
+            return item
 
     def try_read_input(self, timeout: float) -> str | None:
-        """Return a queued message within *timeout* seconds, or None."""
+        """Return a queued message within *timeout* seconds, or None. Raises KeyboardInterrupt on Ctrl+C."""
         try:
-            return self._input_queue.get(timeout=timeout)
+            item = self._input_queue.get(timeout=timeout)
         except queue.Empty:
             return None
+        if item is InkDisplay._CTRL_C:
+            raise KeyboardInterrupt
+        return item

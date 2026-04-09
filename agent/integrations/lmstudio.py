@@ -2,15 +2,40 @@ from openai import OpenAI
 
 try:
     from core.schemas import ChatRequest
+    from integrations.lmstudio_model_manager import (
+        LMStudioModelManager,
+        LMStudioModelManagerError,
+    )
 except ImportError:
     from agent.core.schemas import ChatRequest
+    from agent.integrations.lmstudio_model_manager import (
+        LMStudioModelManager,
+        LMStudioModelManagerError,
+    )
 
 
 class LMStudioClient:
-    def __init__(self, base_url: str, api_key: str):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        *,
+        context_window: int = 0,
+        ensure_model_loaded: bool = True,
+        model_load_key: str = "",
+        model_load_timeout_seconds: float = 30.0,
+    ):
         self.client = OpenAI(
             base_url=base_url,
             api_key=api_key,
+        )
+        self.context_window = max(0, int(context_window or 0))
+        self.ensure_model_loaded = bool(ensure_model_loaded)
+        self.model_load_key = str(model_load_key or "").strip()
+        self.model_manager = LMStudioModelManager(
+            base_url=base_url,
+            api_key=api_key,
+            timeout_seconds=max(1.0, float(model_load_timeout_seconds or 30.0)),
         )
 
     def _coerce_text(self, value) -> str:
@@ -114,7 +139,21 @@ class LMStudioClient:
             reasoning="".join(reasoning_parts),
         )
 
+    def ensure_model_ready(self, model_name: str) -> dict | None:
+        if not self.ensure_model_loaded or self.context_window <= 0:
+            return None
+
+        result = self.model_manager.ensure_model(
+            model_name=str(model_name or "").strip(),
+            context_window=self.context_window,
+            load_model_key=self.model_load_key or str(model_name or "").strip(),
+        )
+        if isinstance(result, dict) and str(result.get("status", "")).strip().lower() == "error":
+            raise LMStudioModelManagerError(str(result.get("message", "")).strip() or "LM Studio model ensure failed")
+        return result
+
     def chat(self, request: ChatRequest, *, on_content_stream=None) -> str:
+        self.ensure_model_ready(request.model)
         create_kwargs = {
             "model": request.model,
             "messages": request.to_dict()["messages"],

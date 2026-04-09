@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 class AgentLayers:
     identity: str
     system_rules: str
+    memory_rules: str
     boundaries: str
     skills: List[Dict[str, str]] = field(default_factory=list)
 
@@ -16,6 +17,9 @@ class AgentLayers:
 
 [SYSTEM RULES]
 {self.system_rules}
+
+[MEMORY RULES]
+{self.memory_rules}
 
 [BOUNDARIES]
 {self.boundaries}
@@ -50,11 +54,25 @@ class AgentLayers:
             skill_sections
         )
 
+    def build_base_text(self) -> str:
+        """Core prompt without skills — used for token breakdown."""
+        return f"[IDENTITY]\n{self.identity}\n\n[SYSTEM RULES]\n{self.system_rules}\n\n[MEMORY RULES]\n{self.memory_rules}\n\n[BOUNDARIES]\n{self.boundaries}".strip()
+
+    def build_skills_text(self) -> str:
+        """Skills section only — used for token breakdown."""
+        parts = []
+        for skill in self.skills:
+            t = str((skill.get("manifest") or {}).get("text", "")).strip()
+            if t:
+                parts.append(t)
+        return "\n\n".join(parts)
+
     @staticmethod
     def from_json(data: Dict):
         return AgentLayers(
             identity=data["identity"],
             system_rules=data["system_rules"],
+            memory_rules=data.get("memory_rules", ""),
             boundaries=data["boundaries"],
             skills=data.get("skills", []),
         )

@@ -224,22 +224,26 @@ class Config:
         prompt_paths = data["prompt_paths"]
         identity_path = self.base_dir / prompt_paths["identity"]
         rules_path = self.base_dir / prompt_paths["system_rules"]
+        memory_rules_path = self.base_dir / prompt_paths.get("memory_rules", "prompts/memory_rules.md")
         boundaries_path = self.base_dir / prompt_paths["boundaries"]
 
         self._prompt_file_paths = [
             identity_path,
             rules_path,
+            memory_rules_path,
             boundaries_path,
         ]
 
         self.identity = self._read_md(identity_path)
         self.system_rules = self._read_md(rules_path)
+        self.memory_rules = self._read_md(memory_rules_path)
         self.boundaries = self._read_md(boundaries_path)
         self.skills = self._load_skills()
 
         self.agent_layers = AgentLayers(
             identity=self.identity,
             system_rules=self.system_rules,
+            memory_rules=self.memory_rules,
             boundaries=self.boundaries,
             skills=self.skills,
         )
@@ -254,7 +258,13 @@ class Config:
         self.model = self._model_override or self.default_model
         self.temperature = data["llm"]["temperature"]
         self.max_tokens = data["llm"]["max_tokens"]
-        self.context_window = max(1, int(data["llm"].get("context_window", 32768)))
+        self.context_window = max(0, int(data["llm"].get("context_window", 32768)))
+        self.ensure_model_loaded = bool(data["llm"].get("ensure_model_loaded", True))
+        self.model_load_key = str(data["llm"].get("model_load_key", "")).strip()
+        self.model_load_timeout_seconds = max(
+            1.0,
+            float(data["llm"].get("model_load_timeout_seconds", 30.0)),
+        )
         self.default_stream = bool(data["llm"].get("stream", False))
         if self._stream_override is None:
             self.stream = self.default_stream
@@ -264,15 +274,8 @@ class Config:
 
         memory = data.get("memory", {})
         self.memory_enabled = bool(memory.get("enabled", True))
-        memory_store_path = str(memory.get("store_path", "")).strip() or "data/memories/skill-memory.json"
-        self.memory_store_path = str((self.base_dir / memory_store_path).resolve())
-        self.memory_max_entries = max(10, int(memory.get("max_entries", 200)))
-        self.memory_retrieve_limit = max(0, int(memory.get("retrieve_limit", 6)))
-        self.memory_always_include_limit = max(0, int(memory.get("always_include_limit", 3)))
-        self.memory_extract_after_turn = bool(memory.get("extract_after_turn", True))
-        self.memory_extractor_max_tokens = max(128, int(memory.get("extractor_max_tokens", 600)))
+        self.memory_store_path = str((self.base_dir / "data/memories").resolve())
         self.memory_extractor_model = str(memory.get("extractor_model", "")).strip()
-        self.memory_extractor_no_think = bool(memory.get("extractor_no_think", False))
 
         telegram = data.get("telegram", {})
         self.telegram_enabled = bool(telegram.get("enabled", False))

@@ -56,6 +56,7 @@ def normalize_auto_context(config) -> dict | None:
         "contains_any": contains_any,
         "regex_any": regex_any,
         "once_per_turn": bool(config.get("once_per_turn", True)),
+        "once_per_session": bool(config.get("once_per_session", False)),
         "success_prompt": success_prompt,
         "error_prompt": error_prompt,
     }
@@ -208,8 +209,10 @@ def collect_auto_context_messages(
     context=None,
     skill_call: dict | None = None,
     executed_skills: set[str] | None = None,
-) -> tuple[list[str], set[str]]:
+    session_executed_skills: set[str] | None = None,
+) -> tuple[list[str], set[str], set[str]]:
     executed = set(executed_skills or set())
+    session_executed = set(session_executed_skills or set())
     relevant_text = build_auto_context_text(
         user_input=user_input,
         task=task,
@@ -217,7 +220,7 @@ def collect_auto_context_messages(
         skill_call=skill_call,
     )
     if not relevant_text.strip():
-        return [], executed
+        return [], executed, session_executed
 
     candidates = []
     for skill in skills:
@@ -228,6 +231,8 @@ def collect_auto_context_messages(
         auto_context = skill.get("auto_context")
         if not skill_name or not isinstance(auto_context, dict):
             continue
+        if auto_context.get("once_per_session", False) and skill_name in session_executed:
+            continue
         if auto_context.get("once_per_turn", True) and skill_name in executed:
             continue
         if not _auto_context_matches(auto_context, relevant_text):
@@ -235,7 +240,7 @@ def collect_auto_context_messages(
         candidates.append((skill_name, skill, auto_context))
 
     if not candidates:
-        return [], executed
+        return [], executed, session_executed
 
     runtime = SkillRuntime(skills)
     messages = []
@@ -247,5 +252,6 @@ def collect_auto_context_messages(
         )
         messages.append(_render_auto_context_message(skill, auto_context, preflight_result))
         executed.add(skill_name)
+        session_executed.add(skill_name)
 
-    return messages, executed
+    return messages, executed, session_executed

@@ -447,7 +447,7 @@ You may use only this one skill and its instructions below.
         executed_skills: set[str],
         debug_context: dict | None = None,
     ) -> set[str]:
-        auto_messages, updated_executed = collect_auto_context_messages(
+        auto_messages, updated_executed, _ = collect_auto_context_messages(
             self.config.skills,
             task=task,
             context=context,

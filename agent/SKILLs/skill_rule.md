@@ -30,6 +30,7 @@ Current files in this area include:
 - `agent/SKILLs/notion_basic/`
 - `agent/SKILLs/schedule_task/`
 - `agent/SKILLs/time_query/`
+- `agent/SKILLs/workspace_context/`
 
 ## 3. Required SKILL Folder Structure
 
@@ -91,6 +92,12 @@ Important files for `time_query`:
 - `agent/SKILLs/time_query/skills_config.json`: runtime registration
 - `agent/SKILLs/time_query/scripts/time_tool.py`: actual tool implementation for current-time and timezone-conversion queries
 
+Important files for `workspace_context`:
+- `agent/SKILLs/workspace_context/SKILL.md`: prompt-facing skill description
+- `agent/SKILLs/workspace_context/examples.md`: usage examples for the model
+- `agent/SKILLs/workspace_context/skills_config.json`: runtime registration (execution_mode: default, once_per_session: true)
+- `agent/SKILLs/workspace_context/scripts/workspace_tool.py`: returns CWD and key project path prefixes
+
 ## 5. skills_config.json Rules
 
 Each SKILL must be registered in a `skills_config.json` file.
@@ -132,6 +139,7 @@ Field rules:
 - `trigger.contains_any`: substring list checked case-insensitively against the current turn text
 - `trigger.regex_any`: regex list checked against the current turn text
 - `once_per_turn`: when true, the automatic action runs at most once per user turn
+- `once_per_session`: when true, the automatic action runs at most once per agent session instance (survives across turns, resets when the agent process restarts)
 - `success_prompt`: internal context template appended back to the model after success
 - `error_prompt`: internal context template appended back to the model after failure
 

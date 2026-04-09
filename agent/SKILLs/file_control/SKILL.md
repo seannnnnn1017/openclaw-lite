@@ -1,6 +1,6 @@
 ---
 name: file-control
-description: Read files, edit files safely with backups, and restore previous versions through the external skill server
+description: Read text files and local images, edit files safely with backups, and restore previous versions through the external skill server
 user-invocable: true
 command-dispatch: tool
 command-tool: file_tool
@@ -8,7 +8,7 @@ command-arg-mode: raw
 metadata: { "openclaw": { "requires": { "bins": ["python"] } } }
 ---
 
-Use this skill when the user wants to inspect a file, create a file, overwrite content, append content, delete a file, make targeted text edits, or restore a previous file state.
+Use this skill when the user wants to inspect a text file or local image, create a file, overwrite content, append content, delete a file, make targeted text edits, or restore a previous file state.
 
 This skill is selected by the agent and executed by the skill server.
 When this skill is needed, reply with exactly one JSON object and nothing else.
