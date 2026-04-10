@@ -338,7 +338,14 @@ def c09():
 def c10():
     page_id = _created_pages.get("s04_page_id")
     if not page_id:
-        raise AssertionError("S04 must pass before C10")
+        # When running --complex-only, S04 hasn't run; create a temporary page
+        r_create = nwt.run("batch_create_pages", pages=[{
+            "title": "[C10] append_content target",
+            "content": "Initial content.",
+            "parent_id": TARGET_PAGE,
+        }])
+        assert r_create["status"] == "ok", r_create.get("message", str(r_create))
+        page_id = r_create["data"]["pages"][0]["page_id"]
     r = nwt.run("append_content",
                 page_id=page_id,
                 content="## Appended by C10\n\nFinal test block.\n\n- item one\n- item two")
