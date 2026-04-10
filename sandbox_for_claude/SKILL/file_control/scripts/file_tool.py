@@ -266,6 +266,17 @@ def ensure_backup_storage_not_mutated(action: str, path: str, full_path: str):
     return None
 
 
+def _ensure_read_not_backup_storage(action: str, target_path: str) -> dict | None:
+    """Return an error result if target_path is inside the backup storage area."""
+    try:
+        resolved = Path(safe_path(target_path)).resolve()
+        if resolved == TEMP_DIR.resolve() or TEMP_DIR.resolve() in resolved.parents:
+            return error(action, target_path, "Reading backup storage is not permitted")
+    except Exception:
+        pass
+    return None
+
+
 def _list_directory(path: str, pattern: str = "*", recursive: bool = False) -> dict:
     """List files in a directory matching a glob pattern."""
     dir_path = Path(safe_path(path))
@@ -329,7 +340,8 @@ def _read_all(paths: list = None, dir: str = "", pattern: str = "*.md", encoding
         try:
             size = p.stat().st_size
             if size > MAX_FILE_BYTES:
-                content = p.read_text(encoding=encoding, errors="replace")[:MAX_FILE_BYTES]
+                raw = p.read_bytes()[:MAX_FILE_BYTES]
+                content = raw.decode(encoding, errors="replace")
                 entry.update({"content": content, "status": "ok", "truncated": True,
                                "size_bytes": size, "truncated_at_bytes": MAX_FILE_BYTES})
             else:
@@ -375,9 +387,17 @@ def run(
             return restore_backup(backup_id)
 
         if action == "list_directory":
+            guard = _ensure_read_not_backup_storage("list_directory", path)
+            if guard:
+                return guard
             return _list_directory(path, pattern=pattern, recursive=recursive)
 
         if action == "read_all":
+            check_path = dir if dir else (paths[0] if paths else "")
+            if check_path:
+                guard = _ensure_read_not_backup_storage("read_all", check_path)
+                if guard:
+                    return guard
             return _read_all(paths=paths, dir=dir, pattern=pattern, encoding=encoding)
 
         full_path = safe_path(path)
