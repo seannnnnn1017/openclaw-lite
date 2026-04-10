@@ -22,6 +22,7 @@ class Config:
         self._prompt_file_paths = []
         self._skill_file_paths = []
         self._secret_file_paths = []
+        self._skill_dirs = self._resolve_skill_dirs(None)
         self._model_override = None
         self._stream_override = None
         self.default_model = ""
@@ -141,10 +142,34 @@ class Config:
             snapshot[key] = self._safe_file_signature(path)
         return snapshot
 
+    def _resolve_skill_dirs(self, raw_dirs) -> list[Path]:
+        """Resolve skill_dirs config entries to absolute Paths that exist."""
+        if not raw_dirs:
+            raw_dirs = ["SKILLs"]
+        resolved = []
+        seen = set()
+        for raw in raw_dirs:
+            p = Path(str(raw).strip())
+            if not p.is_absolute():
+                p = (self.base_dir / p).resolve()
+            else:
+                p = p.resolve()
+            key = str(p)
+            if key not in seen and p.exists():
+                seen.add(key)
+                resolved.append(p)
+        return resolved
+
     def _load_skills(self) -> list[dict]:
         loaded_skills = []
         tracked_paths = []
-        skill_config_paths = sorted(self.base_dir.glob("SKILLs/**/skills_config.json"))
+        seen_skill_names: set[str] = set()
+        # Iterate skill dirs in order; within each dir sort for determinism.
+        skill_config_paths = [
+            path
+            for skill_dir in self._skill_dirs
+            for path in sorted(skill_dir.rglob("skills_config.json"))
+        ]
 
         for skill_config_path in skill_config_paths:
             tracked_paths.append(skill_config_path)
@@ -161,6 +186,11 @@ class Config:
                 tracked_paths.append(skill_md_path)
                 if not skill_md_path.exists():
                     continue
+
+                skill_name_key = str(skill_entry.get("name", skill_dir.name)).strip()
+                if skill_name_key in seen_skill_names:
+                    continue
+                seen_skill_names.add(skill_name_key)
 
                 try:
                     skill_metadata, skill_content = self._parse_skill_markdown(skill_md_path)
@@ -194,7 +224,11 @@ class Config:
         return loaded_skills
 
     def _collect_tracked_paths(self) -> list[Path]:
-        skill_config_paths = list(self.base_dir.glob("SKILLs/**/skills_config.json"))
+        skill_config_paths = [
+            path
+            for skill_dir in self._skill_dirs
+            for path in skill_dir.rglob("skills_config.json")
+        ]
         paths = (
             [self.path]
             + self._prompt_file_paths
@@ -234,6 +268,7 @@ class Config:
             boundaries_path,
         ]
 
+        self._skill_dirs = self._resolve_skill_dirs(data.get("skill_dirs"))
         self.identity = self._read_md(identity_path)
         self.system_rules = self._read_md(rules_path)
         self.memory_rules = self._read_md(memory_rules_path)

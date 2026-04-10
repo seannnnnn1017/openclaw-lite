@@ -31,6 +31,10 @@
     "state_path": "data/system/telegram_bridge_state.json",
     "image_storage_path": "data/telegram_media"
   },
+  "skill_dirs": [
+    "SKILLs",
+    "../sandbox_for_claude/SKILL"
+  ],
   "prompt_paths": {
     "identity": "prompts/identity.md",
     "system_rules": "prompts/system_rules.md",
