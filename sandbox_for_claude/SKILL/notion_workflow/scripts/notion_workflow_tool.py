@@ -16,6 +16,15 @@ from notion_mcp_tool import (
 
 CHUNK_SIZE = 90  # Notion allows max 100 blocks per patch-block-children call
 
+_RUNTIME_CONFIG_CACHE: dict | None = None
+
+
+def _get_config() -> dict:
+    global _RUNTIME_CONFIG_CACHE
+    if _RUNTIME_CONFIG_CACHE is None:
+        _RUNTIME_CONFIG_CACHE = _load_runtime_config()
+    return _RUNTIME_CONFIG_CACHE
+
 
 def ok(action: str, data=None, message: str = "") -> dict:
     return {"status": "ok", "action": action, "data": data or {}, "message": message}
@@ -28,6 +37,12 @@ def err(action: str, message: str, data=None) -> dict:
 # ---------------------------------------------------------------------------
 # Markdown → Notion blocks
 # ---------------------------------------------------------------------------
+
+def _is_ordered_list(line: str) -> bool:
+    """Return True if line starts with a Markdown ordered list marker (1. text, 10. text, etc.)."""
+    parts = line.split(". ", 1)
+    return len(parts) == 2 and parts[0].isdigit()
+
 
 def markdown_to_blocks(text: str) -> list[dict]:
     """Convert Markdown text to Notion block objects."""
@@ -85,11 +100,12 @@ def markdown_to_blocks(text: str) -> list[dict]:
             })
 
         # Ordered list
-        elif len(line) > 2 and line[0].isdigit() and line[1] == "." and line[2] == " ":
+        elif _is_ordered_list(line):
+            text = line.split(". ", 1)[1].strip() if ". " in line else line
             blocks.append({
                 "object": "block",
                 "type": "numbered_list_item",
-                "numbered_list_item": {"rich_text": [{"type": "text", "text": {"content": line[3:].strip()[:2000]}}]},
+                "numbered_list_item": {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]},
             })
 
         # Non-empty paragraph
@@ -120,7 +136,7 @@ def _heading_block(level: int, text: str) -> dict:
 
 def _notion_call(tool_name: str, arguments: dict) -> dict:
     """Call a Notion MCP tool and return parsed result dict."""
-    config = _load_runtime_config()
+    config = _get_config()
     result = _call_tool(config, tool_name=tool_name, arguments=arguments)
     if result.get("status") != "ok":
         raise RuntimeError(result.get("message", f"MCP call failed: {tool_name}"))
@@ -154,6 +170,8 @@ def _append_blocks(page_id: str, blocks: list[dict]) -> None:
     for i in range(0, len(blocks), CHUNK_SIZE):
         chunk = blocks[i: i + CHUNK_SIZE]
         _notion_call("API-patch-block-children", {"block_id": page_id, "children": chunk})
+        if i + CHUNK_SIZE < len(blocks):  # Don't sleep after the last chunk
+            time.sleep(0.1)
 
 
 def _get_child_titles(page_id: str) -> set[str]:
@@ -188,6 +206,7 @@ def action_batch_create_pages(pages: list, **_) -> dict:
         if not parent_id:
             results.append({"title": title, "status": "error", "error": "missing parent_id"})
             errors += 1
+            time.sleep(0.25)
             continue
         try:
             page_id = _create_page(parent_id, title)
@@ -201,6 +220,7 @@ def action_batch_create_pages(pages: list, **_) -> dict:
         except Exception as exc:
             results.append({"title": title, "status": "error", "error": str(exc)})
             errors += 1
+        time.sleep(0.25)
     return ok("batch_create_pages",
               data={"pages": results, "success_count": success, "error_count": errors},
               message=f"Created {success} page(s), {errors} error(s)")
@@ -231,6 +251,7 @@ def _import_file_list(
     parent_title: str,
     action_name: str,
     skip_titles: set[str] = None,
+    existing_parent_id: str = "",
 ) -> dict:
     """Core import logic shared by import_folder, import_files, sync_folder."""
     if not parent_page_id:
@@ -267,11 +288,14 @@ def _import_file_list(
             entry["error"] = str(exc)
         file_contents.append(entry)
 
-    # Step 2: Create parent page
-    try:
-        new_parent_id = _create_page(parent_page_id, parent_title)
-    except Exception as exc:
-        return err(action_name, f"Failed to create parent page '{parent_title}': {exc}")
+    # Step 2: Create or reuse parent page
+    if existing_parent_id:
+        new_parent_id = existing_parent_id
+    else:
+        try:
+            new_parent_id = _create_page(parent_page_id, parent_title)
+        except Exception as exc:
+            return err(action_name, f"Failed to create parent page '{parent_title}': {exc}")
 
     parent_url = f"https://www.notion.so/{new_parent_id.replace('-', '')}"
 
@@ -358,19 +382,21 @@ def action_sync_folder(folder: str = "", parent_page_id: str = "", parent_title:
 
     # Find existing parent page to deduplicate
     existing_titles: set[str] = set()
+    existing_parent_id: str = ""
     try:
         result = _notion_call("API-get-block-children", {"block_id": parent_page_id, "page_size": 100})
         for child in result.get("results", []):
             if child.get("type") == "child_page":
                 child_title = child.get("child_page", {}).get("title", "")
                 if child_title.lower() == parent_title.lower():
-                    existing_titles = _get_child_titles(child.get("id", ""))
+                    existing_parent_id = child.get("id", "")
+                    existing_titles = _get_child_titles(existing_parent_id)
                     break
     except Exception:
         pass  # On any error, do a full import
 
     return _import_file_list(paths, parent_page_id, parent_title, "sync_folder",
-                              skip_titles=existing_titles)
+                              skip_titles=existing_titles, existing_parent_id=existing_parent_id)
 
 
 # ---------------------------------------------------------------------------
@@ -378,6 +404,8 @@ def action_sync_folder(folder: str = "", parent_page_id: str = "", parent_title:
 # ---------------------------------------------------------------------------
 
 def run(action: str, **kwargs) -> dict:
+    global _RUNTIME_CONFIG_CACHE
+    _RUNTIME_CONFIG_CACHE = None  # Reset for each top-level call
     try:
         if action == "batch_create_pages":
             return action_batch_create_pages(**kwargs)
