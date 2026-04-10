@@ -121,6 +121,7 @@ class InkDisplay:
         "tool_res": "tool",
         "memory": "memory",
         "system": "system",
+        "compact": "compact",
     }
 
     # ------------------------------------------------------------------
@@ -210,6 +211,9 @@ class InkDisplay:
 
     def tool_result(self, step: int, text: str) -> None:
         self._emit("tool_res", f"step={step} result: {text}")
+
+    def compact(self, text: str) -> None:
+        self._emit("compact", text)
 
     def memory(self, text: str) -> None:
         self._emit("memory", text)

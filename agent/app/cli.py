@@ -30,6 +30,7 @@ HELP_TEXT = """Available commands:
   remove <id|name>         Remove one scheduled task by ID or task name
   remove -all              Remove all scheduled tasks
 /think [on|off]            Show current [THINK] status or toggle it
+/compact [on|off]          Show or toggle history compression (L1/L2/L3 pipeline)
 /reload                    Reload config, prompts, skills, and runtime clients
 /status                    Show the current model, history size, estimated prompt/history tokens, display categories, and endpoint URLs"""
 
@@ -46,6 +47,11 @@ THINK_HELP_TEXT = """Think commands:
 /think [on|off]            Show the current [THINK] setting or toggle it
   on                       Show [THINK n] output
   off                      Hide [THINK n] output"""
+
+COMPACT_HELP_TEXT = """Compact commands:
+/compact [on|off]          Show current history compression status or toggle it
+  on                       Enable L1/L2/L3 history compression
+  off                      Disable history compression (useful for debugging)"""
 
 STREAM_HELP_TEXT = """Stream commands:
 /stream [on|off]           Show the current LLM streaming setting or toggle it
@@ -92,6 +98,7 @@ def format_status(config, agent) -> str:
         f"tool={'on' if agent.display_category_enabled('tool') else 'off'}",
         f"memory={'on' if agent.display_category_enabled('memory') else 'off'}",
         f"system={'on' if agent.display_category_enabled('system') else 'off'}",
+        f"compact={'on' if agent.compression_enabled() else 'off'}",
     ]
     token_summary = agent.token_estimate_summary()
     memory_summary = agent.long_term_memory_summary()
@@ -271,6 +278,24 @@ def handle_cli_command(
             return _response("Disabled [THINK] output for this session.")
 
         return _response(f'Unknown /think subcommand: {" ".join(args)}\n\n{THINK_HELP_TEXT}')
+
+    if command == "/compact":
+        if not args:
+            status = "on" if agent.compression_enabled() else "off"
+            return _response(
+                f"History compression: {status}\n\n{COMPACT_HELP_TEXT}"
+            )
+
+        subcommand = args[0].lower()
+        if subcommand == "on" and len(args) == 1:
+            agent.set_compression_enabled(True)
+            return _response("History compression enabled (L1/L2/L3 pipeline active).")
+
+        if subcommand == "off" and len(args) == 1:
+            agent.set_compression_enabled(False)
+            return _response("History compression disabled.")
+
+        return _response(f'Unknown /compact subcommand: {" ".join(args)}\n\n{COMPACT_HELP_TEXT}')
 
     if command == "/status":
         if args:

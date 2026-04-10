@@ -66,6 +66,7 @@ class AgentApplication:
             display=self.display,
             build_agent_session=self._build_agent_session,
             handle_remote_command=self.handle_remote_command,
+            debug_logger=self.debug_logger,
         )
         architecture_path = generate_system_architecture(self.config)
         self.display.system(f"System doc generated: {architecture_path}")
@@ -81,8 +82,25 @@ class AgentApplication:
             log_path=str(self.debug_logger.path),
         )
 
-    def _ensure_skill_server(self, timeout: float = 15.0):
-        """Start the skill server as a subprocess if it is not already running."""
+    def _stop_skill_server(self):
+        """Terminate the skill server process we own, if any."""
+        if self._skill_server_proc is not None:
+            self._skill_server_proc.terminate()
+            try:
+                self._skill_server_proc.wait(timeout=5)
+            except Exception:
+                self._skill_server_proc.kill()
+            self._skill_server_proc = None
+
+    def _ensure_skill_server(self, timeout: float = 15.0, *, force_restart: bool = False):
+        """Start the skill server subprocess.
+
+        Parameters
+        ----------
+        force_restart:
+            When True, terminate any running skill server (owned or external)
+            before starting a fresh one.
+        """
         url = self.config.skill_server_url.rstrip("/") + "/skills"
 
         def _is_up() -> bool:
@@ -92,7 +110,13 @@ class AgentApplication:
             except Exception:
                 return False
 
-        if _is_up():
+        if force_restart:
+            self._stop_skill_server()
+            # Also kill any externally started skill server on the same port.
+            deadline_kill = time.monotonic() + 3.0
+            while _is_up() and time.monotonic() < deadline_kill:
+                time.sleep(0.2)
+        elif _is_up():
             self.display.system("Skill server already running.")
             return
 
@@ -105,7 +129,7 @@ class AgentApplication:
         log_file = open(log_path, "w", encoding="utf-8")
         self._skill_server_proc = subprocess.Popen(
             [sys.executable, "-u", str(server_script)],
-            cwd=str(self.agent_root),
+            cwd=str(self.project_root),
             stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=log_file,
@@ -174,6 +198,8 @@ class AgentApplication:
         )
 
     def reload_runtime(self) -> Path:
+        self.display.system("Restarting skill server…")
+        self._ensure_skill_server(force_restart=True)
         self.config.reload_now()
         self.main_agent.refresh_runtime_clients()
         self.telegram_runtime.refresh_runtime_clients()
@@ -186,13 +212,20 @@ class AgentApplication:
         return generate_system_architecture(self.config)
 
     def _handle_cli_command(self, command_line: str, *, agent: SimpleAgent) -> dict:
-        return handle_cli_command(
+        result = handle_cli_command(
             command_line,
             config=self.config,
             agent=agent,
             project_root=self.project_root,
             on_reload=self.reload_runtime,
         )
+        if result.get("handled"):
+            self.debug_logger.log_event(
+                "cli_command",
+                command=command_line.strip(),
+                exit_requested=result.get("exit_requested", False),
+            )
+        return result
 
     def handle_remote_command(self, command_text: str, session_agent: SimpleAgent) -> str:
         command_result = self._handle_cli_command(command_text, agent=session_agent)
@@ -204,6 +237,14 @@ class AgentApplication:
 
     def on_scheduled_event(self, event: dict):
         live_chat_ids = self.telegram_runtime.delivery_chat_ids()
+        self.debug_logger.log_event(
+            "scheduler_trigger",
+            task_id=event.get("task_id"),
+            task_name=event.get("task_name"),
+            trigger=event.get("trigger"),
+            scheduled_for=event.get("scheduled_for"),
+            status=event.get("status"),
+        )
         with self.display.capture_events(
             categories={"tool"},
             on_event=self.telegram_runtime.build_tool_streamer(chat_ids=live_chat_ids),
@@ -216,6 +257,12 @@ class AgentApplication:
                 self.telegram_runtime.broadcast_text(
                     f"Scheduled task error: {error_text}",
                     label="scheduled-task",
+                )
+                self.debug_logger.log_event(
+                    "scheduler_result",
+                    task_name=event.get("task_name"),
+                    status="error",
+                    error=error_text,
                 )
                 self.display.prompt()
                 return
@@ -243,6 +290,12 @@ class AgentApplication:
                     trigger=event.get("trigger", ""),
                     scheduled_for=event.get("scheduled_for", ""),
                 )
+                self.debug_logger.log_event(
+                    "scheduler_result",
+                    task_name=event.get("task_name"),
+                    status=status,
+                    reply_chars=len(reply),
+                )
                 self.display.agent(reply)
             except Exception as exc:
                 error_text = str(exc)
@@ -254,6 +307,12 @@ class AgentApplication:
                     error_text=error_text,
                     trigger=event.get("trigger", ""),
                     scheduled_for=event.get("scheduled_for", ""),
+                )
+                self.debug_logger.log_event(
+                    "scheduler_result",
+                    task_name=event.get("task_name"),
+                    status="error",
+                    error=error_text,
                 )
                 self.display.system_block(f"Scheduled task error: {error_text}")
 
@@ -347,6 +406,4 @@ class AgentApplication:
             self.debug_logger.log_event("session_stop")
             self.telegram_runtime.stop()
             self.scheduler.stop()
-            if self._skill_server_proc is not None:
-                self._skill_server_proc.terminate()
-                self._skill_server_proc = None
+            self._stop_skill_server()

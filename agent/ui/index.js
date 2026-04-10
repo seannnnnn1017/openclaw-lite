@@ -18,6 +18,7 @@ const STYLES = {
   tool_res:  { icon: '|', label: 'tool',     labelColor: 'yellow',      textDim: true },
   memory:    { icon: '*', label: 'memory',   labelColor: 'magenta' },
   system:    { icon: '#', label: 'system',   labelColor: 'cyan' },
+  compact:   { icon: '%', label: 'compact',  labelColor: 'blue',        textDim: true },
   command:   { icon: '>', label: 'command',  labelColor: 'greenBright', textBold: true },
   assistant: { icon: ':', label: 'assistant',                           textColor: 'whiteBright' },
   error:     { icon: '!', label: 'error',    labelColor: 'red',         textColor: 'red' },

@@ -37,11 +37,13 @@ class TelegramRuntime:
         display,
         build_agent_session: Callable[[], object],
         handle_remote_command: Callable[[str, object], str],
+        debug_logger=None,
     ):
         self.config = config
         self.display = display
         self.build_agent_session = build_agent_session
         self.handle_remote_command = handle_remote_command
+        self.debug_logger = debug_logger
         self.bridge: TelegramBridge | None = None
         self._telegram_agents: dict[int, object] = {}
         self._telegram_task_edits: dict[tuple[int, int], dict] = {}
@@ -87,6 +89,13 @@ class TelegramRuntime:
             return []
         return self.bridge.delivery_chat_ids()
 
+    def _log(self, kind: str, **payload):
+        if self.debug_logger:
+            try:
+                self.debug_logger.log_event(kind, **payload)
+            except Exception:
+                pass
+
     def broadcast_text(
         self,
         text: str,
@@ -107,6 +116,13 @@ class TelegramRuntime:
         errors = result.get("errors", [])
         if errors:
             self.display.system_block(format_telegram_delivery_errors(label, errors), notify=False)
+        self._log(
+            "telegram_message_out",
+            label=label,
+            text_chars=len(cleaned),
+            chat_ids=[d.get("chat_id") for d in result.get("deliveries", [])],
+            error_count=len(errors),
+        )
         return result
 
     def _edit_key(self, chat_id: int, user_id) -> tuple[int, int]:
@@ -469,6 +485,17 @@ class TelegramRuntime:
             f"Telegram message chat={chat_id} user={event.get('username') or event.get('display_name') or '-'} images={len(images)}",
             notify=False,
         )
+        self._log(
+            "telegram_message_in",
+            chat_id=chat_id,
+            user_id=user_id,
+            username=event.get("username"),
+            display_name=event.get("display_name"),
+            text_chars=len(text),
+            images=len(images),
+            has_caption=bool(caption),
+            is_command=text.startswith("/"),
+        )
 
         pending_edit = self._telegram_task_edits.get(self._edit_key(chat_id, user_id))
         if pending_edit:
@@ -569,22 +596,22 @@ class TelegramRuntime:
                 if caption and not str(reply or "").strip():
                     reply_parts.append(f"Caption: {caption}")
                 final_reply = "\n\n".join(part for part in reply_parts if part)
-                if rolling_reply and rolling_reply.finalize(final_reply):
-                    for memory_text in pending_memory_messages:
-                        self.broadcast_text(memory_text, label="memory", chat_ids=[chat_id])
-                    return ""
-                for memory_text in pending_memory_messages:
-                    self.broadcast_text(memory_text, label="memory", chat_ids=[chat_id])
-                return final_reply
+            else:
+                final_reply = str(reply or "")
 
-            if rolling_reply and rolling_reply.finalize(reply):
-                for memory_text in pending_memory_messages:
-                    self.broadcast_text(memory_text, label="memory", chat_ids=[chat_id])
-                return ""
-
+            delivered_by_rolling = bool(rolling_reply and rolling_reply.finalize(final_reply))
             for memory_text in pending_memory_messages:
                 self.broadcast_text(memory_text, label="memory", chat_ids=[chat_id])
-            return reply
+
+            self._log(
+                "telegram_reply_out",
+                chat_id=chat_id,
+                reply_chars=len(final_reply),
+                delivered_by_rolling=delivered_by_rolling,
+                is_command=text.startswith("/"),
+                images=len(images),
+            )
+            return "" if delivered_by_rolling else final_reply
         finally:
             if typing_session:
                 typing_session.stop()

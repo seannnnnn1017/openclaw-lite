@@ -19,7 +19,8 @@ class MemoryCoordinator:
     """Three-tier memory coordinator: Hot (MEMORY.md) / Warm (topic files) / Cold (.jsonl transcripts)."""
 
     def __init__(self, *, config, client, display=None, debug_logger=None):
-        memories_dir = Path(getattr(config, "memory_store_path", "agent/data/memories"))
+        _fallback = Path(__file__).resolve().parent.parent / "data" / "memories"
+        memories_dir = Path(getattr(config, "memory_store_path", str(_fallback)))
         self.enabled = bool(getattr(config, "memory_enabled", True))
         self._hot = MemoryHotLayer(memories_dir)
         self._warm = MemoryWarmSelector(memories_dir, client, config)
@@ -55,9 +56,28 @@ class MemoryCoordinator:
                     self._display.memory(f"wrote {result.get('file', '')}")
                 except Exception:
                     pass
+            if self._debug_logger:
+                try:
+                    self._debug_logger.log_event(
+                        "memory_write",
+                        file=result.get("file", ""),
+                        status=result.get("status", ""),
+                        topic=command.get("topic", ""),
+                    )
+                except Exception:
+                    pass
             return json.dumps(result, ensure_ascii=False)
         if op == "search":
-            return self._writer.search(command)
+            raw = self._writer.search(command)
+            if self._debug_logger:
+                try:
+                    self._debug_logger.log_event(
+                        "memory_search",
+                        query=command.get("query", ""),
+                    )
+                except Exception:
+                    pass
+            return raw
         return json.dumps({"status": "error", "error": f"unknown memory op: {op}"}, ensure_ascii=False)
 
     def stats(self) -> dict:

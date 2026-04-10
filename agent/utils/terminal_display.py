@@ -21,6 +21,7 @@ _ITALIC = "\033[3m"
 
 _RED = "\033[31m"
 _YELLOW = "\033[33m"
+_BLUE = "\033[34m"
 _MAGENTA = "\033[35m"
 _CYAN = "\033[36m"
 
@@ -65,6 +66,7 @@ _STYLES: dict[str, tuple[str, str, str, str]] = {
     "tool_res": ("|", "tool", _YELLOW, _DIM),
     "memory": ("*", "memory", _MAGENTA, ""),
     "system": ("#", "system", _CYAN, ""),
+    "compact": ("%", "compact", _BLUE, _DIM),
     "command": (">", "command", _BGREEN, _BOLD),
     "assistant": (":", "assistant", "", _BWHITE),
     "error": ("!", "error", _RED, _RED),
@@ -410,6 +412,9 @@ class TerminalDisplay:
 
     def tool_result(self, step: int, text: str):
         self._emit("tool_res", f"step={step} result: {text}", category="tool")
+
+    def compact(self, text: str):
+        self._emit("compact", text)
 
     def memory(self, text: str):
         self._emit("memory", text, category="memory")

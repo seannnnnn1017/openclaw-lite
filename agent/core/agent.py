@@ -15,6 +15,7 @@ try:
     from utils.terminal_display import TerminalDisplay
     from core.token_estimator import summarize_prompt_and_history, summarize_with_breakdown
     from storage.memory import MemoryCoordinator
+    from core.history_compressor import HistoryCompressor
 except ImportError:
     from agent.skill.auto_context import collect_auto_context_messages
     from agent.skill.delegated_executor import DelegatedSkillExecutor
@@ -24,6 +25,7 @@ except ImportError:
     from agent.utils.terminal_display import TerminalDisplay
     from agent.core.token_estimator import summarize_prompt_and_history, summarize_with_breakdown
     from agent.storage.memory import MemoryCoordinator
+    from agent.core.history_compressor import HistoryCompressor
 
 
 class SimpleAgent:
@@ -48,6 +50,13 @@ class SimpleAgent:
         self._interrupt_queue: list[str] = []
         self._last_mem_tokens: int = 0
         self._interrupt_lock = threading.Lock()
+        self._compression_enabled: bool = True
+        self.compressor = HistoryCompressor(
+            context_window=getattr(config, "context_window", 0),
+            client=client,
+            model=getattr(config, "model", ""),
+            temperature=getattr(config, "temperature", 0.1),
+        )
 
     def _log_debug(self, kind: str, **payload):
         if not self.debug_logger:
@@ -178,6 +187,24 @@ class SimpleAgent:
             self.history.append(Message(role="assistant", content=assistant_content))
             if len(self.history) > 10:
                 self.history = self.history[-10:]
+            if self._compression_enabled:
+                before_content = sum(len(str(m.content or "")) for m in self.history)
+                before_len = len(self.history)
+                self.history = self.compressor.apply_l1(self.history)
+                self.history = self.compressor.apply_l2(self.history)
+                after_content = sum(len(str(m.content or "")) for m in self.history)
+                self._log_debug(
+                    "history_compress_l1_l2",
+                    history_len_before=before_len,
+                    history_len_after=len(self.history),
+                    chars_before=before_content,
+                    chars_after=after_content,
+                )
+                if after_content < before_content and self.display:
+                    saved = before_content - after_content
+                    self.display.compact(
+                        f"L1/L2: -{saved:,} chars  ({before_content:,} → {after_content:,})"
+                    )
 
     def append_assistant_event(self, content: str):
         with self.history_lock:
@@ -223,6 +250,12 @@ class SimpleAgent:
 
     def think_enabled(self) -> bool:
         return self.display.is_enabled("think")
+
+    def set_compression_enabled(self, enabled: bool):
+        self._compression_enabled = enabled
+
+    def compression_enabled(self) -> bool:
+        return self._compression_enabled
 
     def display_category_enabled(self, category: str) -> bool:
         return self.display.is_enabled(category)
@@ -424,6 +457,32 @@ class SimpleAgent:
             (estimate_message_tokens(role="system", content=hot_content) if hot_content else 0)
             + (estimate_message_tokens(role="system", content=warm_content) if warm_content else 0)
         )
+        if self._compression_enabled and self.compressor.context_window > 0:
+            rough_tokens = (
+                self._last_mem_tokens
+                + sum(
+                    estimate_message_tokens(role=str(getattr(m, "role", "")), content=getattr(m, "content", None))
+                    for m in history_snapshot
+                )
+            )
+            if self.compressor.check_l3_needed(total_tokens=rough_tokens):
+                before_len = len(history_snapshot)
+                with self.history_lock:
+                    self.history = self.compressor.apply_l3(self.history)
+                    history_snapshot = list(self.history)
+                self._log_debug(
+                    "history_compress_l3",
+                    rough_tokens=rough_tokens,
+                    context_window=self.compressor.context_window,
+                    history_len_before=before_len,
+                    history_len_after=len(history_snapshot),
+                )
+                if self.display:
+                    pct = int(rough_tokens / self.compressor.context_window * 100)
+                    self.display.compact(
+                        f"L3: {before_len} turns → {len(history_snapshot)}  "
+                        f"(context {pct}% ≥ 60%, older turns summarised)"
+                    )
         messages.extend(history_snapshot)
         messages.append(Message(role="user", content=user_input))
         return messages
@@ -606,8 +665,22 @@ class SimpleAgent:
 
         return None
 
+    _RESULT_JSON_CHAR_LIMIT = 24_000  # ~6 000 tokens — enough for most results
+
+    def _truncate_result_json(self, skill_result: dict) -> tuple[str, bool]:
+        """Return (json_string, was_truncated)."""
+        full = json.dumps(skill_result, ensure_ascii=False)
+        if len(full) <= self._RESULT_JSON_CHAR_LIMIT:
+            return full, False
+        truncated = full[: self._RESULT_JSON_CHAR_LIMIT]
+        return (
+            truncated
+            + f"\n... [TRUNCATED — original {len(full)} chars, showing first {self._RESULT_JSON_CHAR_LIMIT}]",
+            True,
+        )
+
     def _build_tool_result_message(self, skill_result: dict):
-        result_json = json.dumps(skill_result, ensure_ascii=False)
+        result_json, was_truncated = self._truncate_result_json(skill_result)
         if self._skill_result_has_error(skill_result):
             message_text = (
                 "The skill server returned an error for your JSON instruction.\n"
@@ -617,11 +690,21 @@ class SimpleAgent:
                 " Do not claim the requested side effect succeeded unless a later tool result confirms success."
             )
         else:
+            if was_truncated:
+                follow_up = (
+                    "The result above was truncated due to size."
+                    " Summarise what you have and answer the original user request."
+                    " Do NOT re-read or re-fetch the same resource."
+                )
+            else:
+                follow_up = (
+                    "If more tool use is required, return exactly one JSON object."
+                    " Otherwise, answer the original user request."
+                )
             message_text = (
                 "The skill server executed your JSON instruction.\n"
                 f"Skill result JSON:\n{result_json}\n\n"
-                "If more tool use is required, return exactly one JSON object."
-                " Otherwise, answer the original user request."
+                + follow_up
             )
         image_parts = self._build_tool_result_image_parts(skill_result)
         if not image_parts:
