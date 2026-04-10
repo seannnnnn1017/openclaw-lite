@@ -1,0 +1,15 @@
+{
+  "skills": [
+    {
+      "name": "notion-workflow",
+      "enabled": true,
+      "execution_mode": "invoked",
+      "path": "notion_workflow",
+      "tool": {
+        "type": "python_function",
+        "module": "sandbox_for_claude.SKILL.notion_workflow.scripts.notion_workflow_tool",
+        "function": "run"
+      }
+    }
+  ]
+}
