@@ -1,0 +1,15 @@
+{
+  "skills": [
+    {
+      "name": "notion-schedule",
+      "enabled": true,
+      "execution_mode": "invoked",
+      "path": "notion_schedule",
+      "tool": {
+        "type": "python_function",
+        "module": "agent.SKILLs.notion_schedule.scripts.notion_mcp_tool",
+        "function": "run"
+      }
+    }
+  ]
+}
