@@ -4,7 +4,6 @@ import hashlib
 import itertools
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
