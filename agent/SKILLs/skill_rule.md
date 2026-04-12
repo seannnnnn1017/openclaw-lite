@@ -276,6 +276,8 @@ Field rules:
 - `args`: tool arguments only
 
 The agent may emit multiple tool calls in sequence.
+For cross-skill tasks, the agent should decompose the work into ordered single-skill steps instead of delegating the entire objective to one skill.
+Example: for "read local markdown files and copy them into Notion", first use `file-control` to gather the source content, then use `notion-basic` for the Notion write phase.
 
 ## 11. Agent Runtime Logic
 
@@ -302,6 +304,7 @@ Additional current behavior:
 - config or prompt reload notices are shown as `[SYSTEM]`
 - the agent currently limits tool steps with `max_tool_steps`
 - matching `default` skills are executed silently and do not emit visible `[TOOL]` call/result events
+- When the model tries to delegate a request that clearly spans both local file access and Notion work into a single skill step, the agent now rejects that plan and asks the model to break the task into sequential single-skill actions.
 
 ## 12. Skill Server Logic
 

@@ -53,6 +53,18 @@ class DelegatedSkillExecutor:
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         return cleaned, think_blocks
 
+    def _supported_actions(self, skill: dict) -> set[str]:
+        manifest = skill.get("manifest", {}) if isinstance(skill, dict) else {}
+        raw_actions = manifest.get("supported_actions", []) if isinstance(manifest, dict) else []
+        actions: set[str] = set()
+        if not isinstance(raw_actions, list):
+            return actions
+        for item in raw_actions:
+            cleaned = str(item or "").strip()
+            if cleaned:
+                actions.add(cleaned)
+        return actions
+
     def _print_tool_message(self, step: int, message: str):
         if not self.display:
             return
@@ -385,9 +397,26 @@ class DelegatedSkillExecutor:
             lines.append(f"Listed tools: {listed_names}")
         return "\n".join(lines)
 
+    def _build_unsupported_action_message(
+        self,
+        *,
+        skill_name: str,
+        requested_action: str,
+        supported_actions: set[str],
+    ) -> str:
+        listed_actions = ", ".join(sorted(supported_actions)) if supported_actions else "(no manifest actions listed)"
+        return (
+            f"Unsupported action `{requested_action}` for `{skill_name}`.\n"
+            f"Only use actions listed in the skill manifest: {listed_actions}\n"
+            "Do not invent delegation aliases or cross-skill actions.\n"
+            "Return exactly one corrected JSON object for the same skill."
+        )
+
     def _build_system_prompt(self, skill: dict) -> str:
         skill_name = str(skill.get("name", "")).strip() or "unknown-skill"
         skill_content = str(skill.get("content", "")).strip()
+        supported_actions = self._supported_actions(skill)
+        supported_actions_line = ", ".join(sorted(supported_actions)) if supported_actions else "(not declared)"
         return f"""
 [ROLE]
 You are the dedicated executor for the single skill `{skill_name}`.
@@ -398,11 +427,16 @@ You may use only this one skill and its instructions below.
 - If tool use is needed, return exactly one JSON object and nothing else.
 - The JSON schema is: {{"skill":"{skill_name}","action":"<action-name>","args":{{...}}}}
 - The `skill` field must always stay `{skill_name}`.
+- The `action` field must be one of the supported actions listed below.
 - Never emit the special routing action `__delegate__`.
 - Preserve the delegated task's constraints and requested output.
 - If the delegated task packet marks hints as untrusted, verify them against the live skill/tool schema instead of reusing them blindly.
+- If the delegated task would require another skill, do not invent cross-skill JSON. Use this skill only for the part it can do, or ask one concise clarifying question.
 - If required information is missing, ask one concise clarifying question.
 - After each tool result, either return another valid JSON object for `{skill_name}` or answer the delegated task in natural language.
+
+[SUPPORTED ACTIONS]
+{supported_actions_line}
 
 [SKILL]
 {skill_content}
@@ -524,6 +558,7 @@ You may use only this one skill and its instructions below.
         last_response = ""
         auto_context_executed: set[str] = set()
         live_tool_names: set[str] = set()
+        supported_actions = self._supported_actions(skill)
         auto_context_executed = self._append_auto_context_messages(
             messages,
             task=task,
@@ -635,6 +670,25 @@ You may use only this one skill and its instructions below.
             )
             if updated_executed != auto_context_executed:
                 auto_context_executed = updated_executed
+                continue
+
+            if supported_actions and skill_call.get("action") not in supported_actions:
+                rejection_message = self._build_unsupported_action_message(
+                    skill_name=skill_name,
+                    requested_action=str(skill_call.get("action", "")).strip(),
+                    supported_actions=supported_actions,
+                )
+                self._log_debug(
+                    "delegate_action_rejected",
+                    debug_context=normalized_debug_context,
+                    skill_name=skill_name,
+                    step=step + 1,
+                    reason=rejection_message,
+                    skill_call=skill_call,
+                    supported_actions=sorted(supported_actions),
+                )
+                messages.append(Message(role="assistant", content=json.dumps(skill_call, ensure_ascii=False)))
+                messages.append(Message(role="user", content=rejection_message))
                 continue
 
             requested_live_tool = ""

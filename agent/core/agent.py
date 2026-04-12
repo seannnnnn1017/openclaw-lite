@@ -15,7 +15,7 @@ try:
     from utils.terminal_display import TerminalDisplay
     from core.token_estimator import summarize_prompt_and_history, summarize_with_breakdown
     from storage.memory import MemoryCoordinator
-    from core.history_compressor import HistoryCompressor
+    from core.history_compressor import HistoryCompressor, L3_USAGE_RATIO
 except ImportError:
     from agent.skill.auto_context import collect_auto_context_messages
     from agent.skill.delegated_executor import DelegatedSkillExecutor
@@ -25,7 +25,7 @@ except ImportError:
     from agent.utils.terminal_display import TerminalDisplay
     from agent.core.token_estimator import summarize_prompt_and_history, summarize_with_breakdown
     from agent.storage.memory import MemoryCoordinator
-    from agent.core.history_compressor import HistoryCompressor
+    from agent.core.history_compressor import HistoryCompressor, L3_USAGE_RATIO
 
 
 class SimpleAgent:
@@ -51,6 +51,7 @@ class SimpleAgent:
         self._last_mem_tokens: int = 0
         self._interrupt_lock = threading.Lock()
         self._compression_enabled: bool = True
+        self._delegate_enabled: bool = True
         self.compressor = HistoryCompressor(
             context_window=getattr(config, "context_window", 0),
             client=client,
@@ -190,8 +191,8 @@ class SimpleAgent:
             if self._compression_enabled:
                 before_content = sum(len(str(m.content or "")) for m in self.history)
                 before_len = len(self.history)
-                self.history = self.compressor.apply_l1(self.history)
-                self.history = self.compressor.apply_l2(self.history)
+                self.history, l1_stats = self.compressor.apply_l1(self.history)
+                self.history, l2_stats = self.compressor.apply_l2(self.history)
                 after_content = sum(len(str(m.content or "")) for m in self.history)
                 self._log_debug(
                     "history_compress_l1_l2",
@@ -199,6 +200,10 @@ class SimpleAgent:
                     history_len_after=len(self.history),
                     chars_before=before_content,
                     chars_after=after_content,
+                    l1_stripped_messages=l1_stats["stripped_count"],
+                    l1_chars_removed=l1_stats["chars_removed"],
+                    l2_compacted_messages=l2_stats["compacted_count"],
+                    l2_chars_removed=l2_stats["chars_removed"],
                 )
                 if after_content < before_content and self.display:
                     saved = before_content - after_content
@@ -226,6 +231,86 @@ class SimpleAgent:
             cleared = len(self.history)
             self.history = []
             return cleared
+
+    def generate_handoff_summary(self) -> str:
+        """Call LLM to produce a structured handoff document from current history + hot memory."""
+        try:
+            from core.history_compressor import _strip_tool_jsonl
+        except ImportError:
+            from agent.core.history_compressor import _strip_tool_jsonl
+
+        with self.history_lock:
+            history_snapshot = list(self.history)
+
+        hot_content = self.memory_coordinator.build_hot_message()
+
+        parts: list[str] = []
+        for msg in history_snapshot:
+            role = str(getattr(msg, "role", "") or "").upper()
+            content = str(getattr(msg, "content", "") or "")
+            content = _strip_tool_jsonl(content).strip()
+            if content:
+                parts.append(f"[{role}]\n{content}")
+        readable_history = "\n\n".join(parts) if parts else "(empty)"
+
+        system_prompt = (
+            "You are preparing a handoff document for a fresh AI agent instance. "
+            "The new agent starts with zero context — only this document. "
+            "Be complete and precise. Preserve all file paths, variable names, tool results, "
+            "decisions, and open tasks verbatim where possible.\n\n"
+            "Use exactly these headers:\n"
+            "## CONTEXT\n"
+            "<what the user is working on and why>\n\n"
+            "## KEY FACTS\n"
+            "- <concrete fact>\n\n"
+            "## DECISIONS\n"
+            "- <decision label>: <what was decided and rationale>\n\n"
+            "## TOOL RESULTS\n"
+            "<important outputs from tool/skill calls>\n\n"
+            "## OPEN ITEMS\n"
+            "- <unresolved question or pending next step>\n\n"
+            "## LONG-TERM MEMORY\n"
+            "<relevant pinned memory to carry over>\n\n"
+            "## LAST USER REQUEST\n"
+            "<the most recent user request and the agent's response or status>"
+        )
+
+        user_content = ""
+        if hot_content:
+            user_content += f"Long-term memory (hot layer):\n{hot_content}\n\n"
+        user_content += f"Conversation history:\n{readable_history}"
+
+        try:
+            request = ChatRequest(
+                model=self.config.model,
+                messages=[
+                    Message(role="system", content=system_prompt),
+                    Message(role="user", content=user_content),
+                ],
+                temperature=0.1,
+                max_tokens=2048,
+                stream=False,
+            )
+            return self.client.chat(request)
+        except Exception as exc:
+            return f"[Handoff summary generation failed: {exc}]"
+
+    def inject_handoff_summary(self, summary: str) -> None:
+        """Seed this (fresh) agent with a handoff summary from a previous session."""
+        with self.history_lock:
+            self.history = [
+                Message(
+                    role="user",
+                    content=f"[HANDOFF FROM PREVIOUS SESSION]\n\n{summary}",
+                ),
+                Message(
+                    role="assistant",
+                    content=(
+                        "Understood. I have the full context from the previous session "
+                        "and am ready to continue."
+                    ),
+                ),
+            ]
 
     def history_size(self) -> int:
         with self.history_lock:
@@ -256,6 +341,12 @@ class SimpleAgent:
 
     def compression_enabled(self) -> bool:
         return self._compression_enabled
+
+    def set_delegate_enabled(self, enabled: bool):
+        self._delegate_enabled = enabled
+
+    def delegate_enabled(self) -> bool:
+        return self._delegate_enabled
 
     def display_category_enabled(self, category: str) -> bool:
         return self.display.is_enabled(category)
@@ -420,6 +511,60 @@ class SimpleAgent:
             return True
         return False
 
+    def _text_mentions_notion(self, text: str) -> bool:
+        candidate = str(text or "")
+        return bool(re.search(r"notion(?:\.so)?", candidate, flags=re.IGNORECASE))
+
+    def _text_mentions_local_files(self, text: str) -> bool:
+        candidate = str(text or "")
+        if re.search(r"[A-Za-z]:\\", candidate):
+            return True
+        if re.search(
+            r"\b[\w\s.\-\\/]+\.(?:md|txt|json|csv|ya?ml|py|html|js|ts|tsx)\b",
+            candidate,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        lowered = candidate.casefold()
+        return any(
+            token in lowered
+            for token in ("資料夾", "檔案", "文件", "folder", "file", "directory")
+        )
+
+    def _build_cross_skill_decomposition_message(self, *, user_input: str, skill_call: dict) -> str:
+        if not isinstance(skill_call, dict):
+            return ""
+
+        skill_name = str(skill_call.get("skill", "")).strip()
+        action = str(skill_call.get("action", "")).strip()
+        if skill_name not in {"file-control", "notion-basic"}:
+            return ""
+        if action not in {"__delegate__", "delegate_task", "delegate", "task"}:
+            return ""
+
+        args = skill_call.get("args", {}) if isinstance(skill_call.get("args"), dict) else {}
+        objective_parts = [str(user_input or "").strip(), str(args.get("task", "")).strip()]
+        context = args.get("context")
+        if context not in (None, ""):
+            try:
+                objective_parts.append(json.dumps(context, ensure_ascii=False))
+            except TypeError:
+                objective_parts.append(str(context))
+        objective_text = "\n".join(part for part in objective_parts if part)
+        if not objective_text:
+            return ""
+        if not (self._text_mentions_notion(objective_text) and self._text_mentions_local_files(objective_text)):
+            return ""
+
+        return (
+            "This request spans local file access and Notion work.\n"
+            "Do not delegate the whole objective to a single skill specialist.\n"
+            "Break it into ordered single-skill steps and return exactly one JSON object for the next concrete step.\n"
+            "Use `file-control` first to read or enumerate the required local files or folders.\n"
+            "After the source content is available in context, use `notion-basic` for the Notion page creation or update phase.\n"
+            "Do not use `delegate_task`, `delegate`, `task`, or `__delegate__` for the full end-to-end import request."
+        )
+
     def _chat(self, messages, *, response_stream_callback=None) -> str:
         request = ChatRequest(
             model=self.config.model,
@@ -446,10 +591,21 @@ class SimpleAgent:
         hot_content = self.memory_coordinator.build_hot_message()
         if hot_content:
             messages.append(Message(role="system", content=hot_content))
+        self._log_debug(
+            "memory_hot_loaded",
+            chars=len(hot_content),
+            loaded=bool(hot_content),
+        )
         active_skills = [str(s.get("name", "")) for s in getattr(self.config, "skills", [])]
         warm_content, warm_files = self.memory_coordinator.build_warm_message(user_input, active_skills)
         if warm_content:
             messages.append(Message(role="system", content=warm_content))
+        self._log_debug(
+            "memory_warm_loaded",
+            files=warm_files,
+            file_count=len(warm_files),
+            chars=len(warm_content),
+        )
         if self.display:
             labels = "".join(f"[{f}]" for f in warm_files if f)
             self.display.memory(f"topics {labels}" if labels else "topics (none)")
@@ -468,14 +624,18 @@ class SimpleAgent:
             if self.compressor.check_l3_needed(total_tokens=rough_tokens):
                 before_len = len(history_snapshot)
                 with self.history_lock:
-                    self.history = self.compressor.apply_l3(self.history)
+                    self.history, l3_summary = self.compressor.apply_l3(self.history)
                     history_snapshot = list(self.history)
                 self._log_debug(
                     "history_compress_l3",
                     rough_tokens=rough_tokens,
                     context_window=self.compressor.context_window,
+                    l3_usage_ratio=L3_USAGE_RATIO,
                     history_len_before=before_len,
                     history_len_after=len(history_snapshot),
+                    summary_model=self.compressor.model,
+                    summary_chars=len(l3_summary),
+                    summary_text=l3_summary,
                 )
                 if self.display:
                     pct = int(rough_tokens / self.compressor.context_window * 100)
@@ -934,6 +1094,22 @@ class SimpleAgent:
                     auto_context_executed = updated_executed
                     continue
 
+                cross_skill_message = self._build_cross_skill_decomposition_message(
+                    user_input=user_input,
+                    skill_call=skill_call,
+                )
+                if cross_skill_message:
+                    self._log_debug(
+                        "cross_skill_repair",
+                        debug_context=normalized_debug_context,
+                        step=step + 1,
+                        skill_call=skill_call,
+                        reason=cross_skill_message,
+                    )
+                    messages.append(Message(role="assistant", content=json.dumps(skill_call, ensure_ascii=False)))
+                    messages.append(Message(role="user", content=cross_skill_message))
+                    continue
+
                 if skill_call.get("message"):
                     self._print_tool_message(step + 1, skill_call["message"])
                 self._print_tool_call(step + 1, skill_call)
@@ -954,13 +1130,20 @@ class SimpleAgent:
                 messages.append(Message(role="assistant", content=json.dumps(skill_call, ensure_ascii=False)))
 
                 try:
-                    if skill_call["action"] == "__delegate__":
+                    if skill_call["action"] == "__delegate__" and self._delegate_enabled:
                         skill_result = self._execute_delegated_skill(
                             skill_call,
                             original_user_input=user_input,
                             trigger_reason="explicit_delegate",
                         )
-                    elif self._skill_delegation_mode(skill_call["skill"]) == "specialist_only":
+                    elif skill_call["action"] == "__delegate__" and not self._delegate_enabled:
+                        skill_result = {
+                            "status": "error",
+                            "skill": skill_call["skill"],
+                            "action": "__delegate__",
+                            "error": "Delegation is disabled (/delegate off). Use direct skill actions instead.",
+                        }
+                    elif self._delegate_enabled and self._skill_delegation_mode(skill_call["skill"]) == "specialist_only":
                         self.display.tool_note(
                             step + 1,
                             "Routing this skill through the dedicated specialist before any live tool call.",
@@ -984,7 +1167,8 @@ class SimpleAgent:
                             args=skill_call["args"],
                         )
                         if (
-                            self._skill_result_has_error(skill_result)
+                            self._delegate_enabled
+                            and self._skill_result_has_error(skill_result)
                             and self._skill_prefers_delegation(skill_call["skill"])
                         ):
                             self.display.tool_note(

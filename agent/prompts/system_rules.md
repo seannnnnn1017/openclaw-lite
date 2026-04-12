@@ -19,6 +19,8 @@
 - Use `action` for the operation to perform.
 - Put only tool arguments inside `args`.
 - If you include `message`, keep it short, user-facing, and free of chain-of-thought style reasoning.
+- If the request clearly needs more than one skill, break it into sequential single-skill steps instead of delegating the entire job to one skill.
+- Do not ask one skill to perform another skill's job. Example: read local files with `file-control` first, then write to Notion with `notion-basic`.
 - After a tool result is provided, either return another valid skill JSON object if more work is needed, or answer the original user request in natural language.
 - You may use multiple tool calls in sequence when a task requires ordered steps.
 - If a request does not need a skill, answer in normal natural language.

@@ -229,3 +229,56 @@ Step 2:
   }
 }
 ```
+
+## list_directory
+
+User request:
+"What files are in E:\Github\Obsidian_database\personal_data_terminal?"
+
+Tool JSON:
+```json
+{
+  "skill": "file-control",
+  "action": "list_directory",
+  "args": {
+    "path": "E:\\Github\\Obsidian_database\\personal_data_terminal",
+    "pattern": "*.md"
+  }
+}
+```
+
+## read_all — by directory
+
+User request:
+"Read all markdown files from that folder"
+
+Tool JSON:
+```json
+{
+  "skill": "file-control",
+  "action": "read_all",
+  "args": {
+    "dir": "E:\\Github\\Obsidian_database\\personal_data_terminal",
+    "pattern": "*.md"
+  }
+}
+```
+
+## read_all — by explicit paths
+
+User request:
+"Read these two files"
+
+Tool JSON:
+```json
+{
+  "skill": "file-control",
+  "action": "read_all",
+  "args": {
+    "paths": [
+      "E:\\Github\\Obsidian_database\\personal_data_terminal\\Index.md",
+      "E:\\Github\\Obsidian_database\\personal_data_terminal\\架構.md"
+    ]
+  }
+}
+```

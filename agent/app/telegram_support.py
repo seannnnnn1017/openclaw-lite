@@ -59,6 +59,9 @@ def format_telegram_memory_event(event: dict) -> str:
         return ""
     rendered = str(event.get("rendered", "")).strip()
     text = str(event.get("text", "")).strip()
+    normalized = text.lower()
+    if normalized.startswith("topics ") or normalized == "topics (none)":
+        return ""
     return rendered or (f"[MEMORY] {text}" if text else "")
 
 

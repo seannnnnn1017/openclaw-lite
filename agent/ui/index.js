@@ -119,11 +119,44 @@ function MessageRow({ msg }) {
   );
 }
 
-// ── Main app: only re-renders on messages / input / hud data changes ─────────
+// ── Paste token helpers ──────────────────────────────────────────────────────
+
+// Find what was added between oldStr and newStr (assumes an insertion/replacement)
+function findAddedSegment(oldStr, newStr) {
+  let pre = 0;
+  const maxPre = Math.min(oldStr.length, newStr.length);
+  while (pre < maxPre && oldStr[pre] === newStr[pre]) pre++;
+
+  let suf = 0;
+  const maxSuf = Math.min(oldStr.length - pre, newStr.length - pre);
+  while (suf < maxSuf && oldStr[oldStr.length - 1 - suf] === newStr[newStr.length - 1 - suf]) suf++;
+
+  return {
+    prefix: newStr.slice(0, pre),
+    added:  newStr.slice(pre, suf > 0 ? newStr.length - suf : newStr.length),
+    suffix: suf > 0 ? newStr.slice(newStr.length - suf) : '',
+  };
+}
+
+// Expand [Paste#N …] tokens back to their real content
+function expandTokens(display, blocks) {
+  return display.replace(/\[Paste#(\d+)[^\]]*\]/g, (_, id) => {
+    const b = blocks.get(Number(id));
+    return b ? b.content : '';
+  });
+}
+
+// Build a compact token label
+function pasteToken(id, extraLines) {
+  return `[Paste#${id} +${extraLines} line${extraLines !== 1 ? 's' : ''}]`;
+}
+
+// ── Main app ─────────────────────────────────────────────────────────────────
 function App() {
   const [messages, setMessages]         = useState([]);
   const [waiting, setWaiting]           = useState('');
-  const [inputValue, setInputValue]     = useState('');
+  const [displayValue, setDisplayValue] = useState('');   // shown in TextInput (no newlines)
+  const [realValue, setRealValue]       = useState('');   // actual content to send
   const [modelName, setModelName]       = useState('');
   const [tokenUsed, setTokenUsed]       = useState(0);
   const [contextWindow, setContextWindow] = useState(0);
@@ -131,11 +164,13 @@ function App() {
   const [memTokens, setMemTokens]         = useState(0);
   const [sklTokens, setSklTokens]         = useState(0);
   const [historyTokens, setHistoryTokens] = useState(0);
-  const [inputHistory, setInputHistory] = useState([]);
+  const [inputHistory, setInputHistory] = useState([]);   // stores real values
   const [historyIndex, setHistoryIndex] = useState(-1);
-  const [savedInput, setSavedInput]     = useState('');
+  const [savedInput, setSavedInput]     = useState({ display: '', real: '' });
   const [ctrlCPending, setCtrlCPending] = useState(false);
-  const ctrlCTimer = useRef(null);
+  const ctrlCTimer   = useRef(null);
+  const pastedBlocks = useRef(new Map()); // id -> { content, lineCount }
+  const pasteCount   = useRef(0);
   const { exit } = useApp();
 
   // IPC
@@ -177,6 +212,21 @@ function App() {
     return () => client.destroy();
   }, [exit]);
 
+  // Load a real value (possibly multiline) into the input, creating a paste token if needed
+  const loadIntoInput = useCallback((real) => {
+    if (!real.includes('\n')) {
+      setDisplayValue(real);
+      setRealValue(real);
+      return;
+    }
+    const id = ++pasteCount.current;
+    const lines = real.split('\n');
+    const extraLines = lines.length - 1;
+    pastedBlocks.current.set(id, { content: real, lineCount: lines.length });
+    setDisplayValue(pasteToken(id, extraLines));
+    setRealValue(real);
+  }, []);
+
   // Global key handler: Ctrl+C forwarded to Python, arrow keys for history
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
@@ -193,37 +243,76 @@ function App() {
     if (key.upArrow) {
       if (inputHistory.length === 0) return;
       if (historyIndex === -1) {
-        setSavedInput(inputValue);
+        setSavedInput({ display: displayValue, real: realValue });
         const idx = inputHistory.length - 1;
         setHistoryIndex(idx);
-        setInputValue(inputHistory[idx]);
+        loadIntoInput(inputHistory[idx]);
       } else if (historyIndex > 0) {
         const idx = historyIndex - 1;
         setHistoryIndex(idx);
-        setInputValue(inputHistory[idx]);
+        loadIntoInput(inputHistory[idx]);
       }
     } else if (key.downArrow) {
       if (historyIndex === -1) return;
       if (historyIndex < inputHistory.length - 1) {
         const idx = historyIndex + 1;
         setHistoryIndex(idx);
-        setInputValue(inputHistory[idx]);
+        loadIntoInput(inputHistory[idx]);
       } else {
         setHistoryIndex(-1);
-        setInputValue(savedInput);
+        setDisplayValue(savedInput.display);
+        setRealValue(savedInput.real);
       }
     }
   });
 
-  const handleSubmit = useCallback((value) => {
-    if (!value.trim()) return;
-    setMessages(prev => [...prev, { style: 'user', text: value }]);
-    setInputHistory(prev => [...prev, value]);
+  // Called by TextInput onChange — detects multiline paste and replaces with token
+  const handleChange = useCallback((newDisplay) => {
+    if (!newDisplay.includes('\n')) {
+      // Normal single-line edit: expand any tokens to build real value
+      setDisplayValue(newDisplay);
+      setRealValue(expandTokens(newDisplay, pastedBlocks.current));
+      return;
+    }
+
+    // Multiline paste: find the newly added segment
+    const { prefix, added, suffix } = findAddedSegment(displayValue, newDisplay);
+
+    if (!added.includes('\n')) {
+      // Edge case: newline came from somewhere unexpected — strip it
+      const safe = newDisplay.replace(/\n/g, ' ');
+      setDisplayValue(safe);
+      setRealValue(expandTokens(safe, pastedBlocks.current));
+      return;
+    }
+
+    const id = ++pasteCount.current;
+    const lines = added.split('\n');
+    const extraLines = lines.length - 1;
+    pastedBlocks.current.set(id, { content: added, lineCount: lines.length });
+
+    const token = pasteToken(id, extraLines);
+    const newDisplayClean = prefix + token + suffix;
+    setDisplayValue(newDisplayClean);
+    setRealValue(expandTokens(newDisplayClean, pastedBlocks.current));
+  }, [displayValue]);
+
+  const handleSubmit = useCallback((_ignored) => {
+    const actual = realValue || displayValue;
+    if (!actual.trim()) return;
+
+    // Show compact form in the message stream, send full content to agent
+    setMessages(prev => [...prev, { style: 'user', text: displayValue }]);
+    setInputHistory(prev => [...prev, actual]);
     setHistoryIndex(-1);
-    setSavedInput('');
-    process.stdout.write(JSON.stringify({ type: 'input', text: value }) + '\n');
-    setInputValue('');
-  }, []);
+    setSavedInput({ display: '', real: '' });
+    process.stdout.write(JSON.stringify({ type: 'input', text: actual }) + '\n');
+
+    setDisplayValue('');
+    setRealValue('');
+    pastedBlocks.current.clear();
+    pasteCount.current = 0;
+  }, [displayValue, realValue]);
 
   const cols = process.stderr.columns || 80;
 
@@ -237,7 +326,7 @@ function App() {
     h(Text, { color: 'gray', dimColor: true }, '═'.repeat(cols)),
     h(Box, { width: '100%' },
       h(Text, { color: 'greenBright', bold: true }, '> '),
-      h(TextInput, { value: inputValue, onChange: setInputValue, onSubmit: handleSubmit })
+      h(TextInput, { value: displayValue, onChange: handleChange, onSubmit: handleSubmit })
     ),
     h(HudBar, { modelName, tokenUsed, contextWindow, sysTokens, memTokens, sklTokens, historyTokens, cols }),
     ctrlCPending && h(Text, { color: 'yellow' }, `${INDENT}Press ctrl+c again to exit`)

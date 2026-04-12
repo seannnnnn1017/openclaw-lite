@@ -266,6 +266,107 @@ def ensure_backup_storage_not_mutated(action: str, path: str, full_path: str):
     return None
 
 
+def _ensure_read_not_backup_storage(action: str, target_path: str) -> dict | None:
+    """Return an error result if target_path is inside the backup storage area."""
+    try:
+        resolved = Path(safe_path(target_path)).resolve()
+        if resolved == TEMP_DIR.resolve() or TEMP_DIR.resolve() in resolved.parents:
+            return error(action, target_path, "Reading backup storage is not permitted")
+    except Exception:
+        pass
+    return None
+
+
+def _list_directory(path: str, pattern: str = "*", recursive: bool = False) -> dict:
+    """List files in a directory matching a glob pattern."""
+    dir_path = Path(safe_path(path))
+    if not dir_path.exists():
+        return error("list_directory", path, f"Path does not exist: {path}")
+    if not dir_path.is_dir():
+        return error("list_directory", path, f"Path is not a directory: {path}")
+
+    if recursive:
+        matched = list(dir_path.rglob(pattern))
+    else:
+        matched = list(dir_path.glob(pattern))
+
+    files = []
+    for p in sorted(matched):
+        if p.is_file():
+            try:
+                size = p.stat().st_size
+            except OSError:
+                size = -1
+            files.append({
+                "name": p.name,
+                "path": str(p),
+                "size_bytes": size,
+                "extension": p.suffix.lower(),
+            })
+
+    return ok(
+        "list_directory",
+        path,
+        data={"files": files, "count": len(files), "pattern": pattern, "recursive": recursive},
+        message=f"Found {len(files)} file(s) matching '{pattern}' in {path}",
+    )
+
+
+def _read_all(paths: list = None, dir: str = "", pattern: str = "*.md", encoding: str = "utf-8") -> dict:
+    """Read multiple files at once. Accepts explicit paths list OR dir+pattern."""
+    MAX_FILE_BYTES = 200 * 1024  # 200 KB per file
+
+    if paths is None:
+        paths = []
+
+    # If dir provided, resolve glob
+    if dir:
+        dir_path = Path(safe_path(dir))
+        if not dir_path.is_dir():
+            return error("read_all", dir, f"dir is not a directory: {dir}")
+        resolved = [str(p) for p in sorted(dir_path.glob(pattern)) if p.is_file()]
+        paths = resolved + [p for p in paths if p not in resolved]
+
+    if not paths:
+        return ok("read_all", dir or "", data={"files": [], "success_count": 0, "error_count": 0},
+                  message="No paths provided")
+
+    results = []
+    success = 0
+    errors = 0
+    for raw_path in paths:
+        p = Path(safe_path(raw_path))
+        entry = {"path": str(p), "name": p.name}
+        try:
+            size = p.stat().st_size
+            if size > MAX_FILE_BYTES:
+                raw = p.read_bytes()[:MAX_FILE_BYTES]
+                content = raw.decode(encoding, errors="replace")
+                entry.update({"content": content, "status": "ok", "truncated": True,
+                               "size_bytes": size, "truncated_at_bytes": MAX_FILE_BYTES})
+            else:
+                content = p.read_text(encoding=encoding, errors="replace")
+                entry.update({"content": content, "status": "ok", "truncated": False, "size_bytes": size})
+            success += 1
+        except FileNotFoundError:
+            entry.update({"content": None, "status": "error", "error": "File not found"})
+            errors += 1
+        except PermissionError:
+            entry.update({"content": None, "status": "error", "error": "Permission denied"})
+            errors += 1
+        except Exception as exc:
+            entry.update({"content": None, "status": "error", "error": str(exc)})
+            errors += 1
+        results.append(entry)
+
+    return ok(
+        "read_all",
+        dir or (paths[0] if paths else ""),
+        data={"files": results, "success_count": success, "error_count": errors},
+        message=f"Read {success} file(s) successfully, {errors} error(s)",
+    )
+
+
 def run(
     action: str,
     path: str = "",
@@ -275,10 +376,29 @@ def run(
     occurrence: int = 1,
     reason: str = "",
     backup_id: str = "",
+    paths: list = None,
+    pattern: str = "*",
+    recursive: bool = False,
+    encoding: str = "utf-8",
+    dir: str = "",
 ):
     try:
         if action == "restore":
             return restore_backup(backup_id)
+
+        if action == "list_directory":
+            guard = _ensure_read_not_backup_storage("list_directory", path)
+            if guard:
+                return guard
+            return _list_directory(path, pattern=pattern, recursive=recursive)
+
+        if action == "read_all":
+            check_path = dir if dir else (paths[0] if paths else "")
+            if check_path:
+                guard = _ensure_read_not_backup_storage("read_all", check_path)
+                if guard:
+                    return guard
+            return _read_all(paths=paths, dir=dir, pattern=pattern, encoding=encoding)
 
         full_path = safe_path(path)
         backup_storage_error = ensure_backup_storage_not_mutated(action, path, full_path)

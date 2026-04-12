@@ -53,6 +53,7 @@ def skill_manifest_notes(skill_name: str) -> list[str]:
         "file-control": [
             "Mutating actions create backups before changes.",
             "Localized edits are preferred over full rewrites when possible.",
+            "For tasks that move local content into another system, use this skill only for the local file stage and hand the prepared content to the destination skill afterward.",
         ],
         "notion-basic": [
             "Primary access now goes through the configured Notion MCP server over HTTP.",
@@ -60,6 +61,8 @@ def skill_manifest_notes(skill_name: str) -> list[str]:
             "Treat the live `tools/list` result as the source of truth for the full Notion MCP API; compatibility aliases remain available.",
             "Use explicit MCP tool arguments rather than old convenience aliases or hidden defaults.",
             "The bridge handles MCP session setup automatically; do not emit `initialize` or notification methods.",
+            "Notion specialists do not read local files directly; for file or folder imports, gather the source content first and pass the prepared payload into Notion work.",
+            "Batch page creation is valid when the caller already supplied the page titles, hierarchy, and exact content to write.",
         ],
         "schedule-task": [
             "Scheduled tasks only run while the agent process is open.",

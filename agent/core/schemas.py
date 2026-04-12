@@ -33,6 +33,9 @@ class AgentLayers:
 - Enabled skills are listed below as compact manifests, not full `SKILL.md` bodies.
 - When a skill is needed, prefer delegating with:
   {"skill":"<skill-name>","action":"__delegate__","args":{"task":"<single-skill objective>","context":{"key":"value"}}}
+- If a user request clearly spans multiple skills, decompose it into ordered single-skill steps instead of delegating the whole job to one specialist.
+- Never delegate an end-to-end cross-skill objective to one skill just because it mentions a final destination like Notion.
+- For local-file-to-Notion work, gather the exact local content first with `file-control`, then hand the prepared content to `notion-basic` for the Notion write phase.
 - Put the delegated objective in `args.task`.
 - Put concrete ids, urls, paths, constraints, dates, and output requirements in `args.context`.
 - Use a direct skill action only when the exact action and required arguments are obvious from the manifest.

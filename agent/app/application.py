@@ -197,6 +197,32 @@ class AgentApplication:
             history_tokens=token_summary.get("history_tokens", 0),
         )
 
+    def handoff_to_new_session(self) -> str:
+        """Generate a handoff summary from the current agent, start a fresh session, and replace main_agent."""
+        old_size = self.main_agent.history_size()
+        self.display.system("Generating handoff summary…")
+        summary = self.main_agent.generate_handoff_summary()
+        if summary.startswith("[Handoff summary generation failed"):
+            self.debug_logger.log_event("handoff_failed", error=summary)
+            return f"Handoff failed: {summary}"
+
+        new_agent = self._build_agent_session()
+        new_agent.inject_handoff_summary(summary)
+        self.main_agent = new_agent
+        self._refresh_display_hud()
+
+        self.debug_logger.log_event(
+            "handoff",
+            old_history_size=old_size,
+            new_history_size=self.main_agent.history_size(),
+            summary_chars=len(summary),
+        )
+        return (
+            f"Handoff complete. Fresh agent session started.\n"
+            f"Previous history: {old_size} messages → 2 seed messages (summary injected).\n"
+            f"Summary: {len(summary):,} chars."
+        )
+
     def reload_runtime(self) -> Path:
         self.display.system("Restarting skill server…")
         self._ensure_skill_server(force_restart=True)
@@ -218,6 +244,7 @@ class AgentApplication:
             agent=agent,
             project_root=self.project_root,
             on_reload=self.reload_runtime,
+            on_handoff=self.handoff_to_new_session,
         )
         if result.get("handled"):
             self.debug_logger.log_event(

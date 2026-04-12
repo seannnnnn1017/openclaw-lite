@@ -4,8 +4,8 @@
     "api_key": "",
     "model": "qwen/qwen3.5-9b",
     "temperature": 0.7,
-    "max_tokens": 50000,
-    "context_window": 50000,
+    "max_tokens": 20000,
+    "context_window": 20000,
     "ensure_model_loaded": true,
     "model_load_key": "",
     "model_load_timeout_seconds": 30,
@@ -32,8 +32,8 @@
     "image_storage_path": "data/telegram_media"
   },
   "skill_dirs": [
-    "SKILLs",
-    "../sandbox_for_claude/SKILL"
+    "sandbox_for_claude/SKILL",
+    "SKILLs"
   ],
   "prompt_paths": {
     "identity": "prompts/identity.md",

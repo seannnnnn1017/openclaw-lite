@@ -31,6 +31,8 @@ HELP_TEXT = """Available commands:
   remove -all              Remove all scheduled tasks
 /think [on|off]            Show current [THINK] status or toggle it
 /compact [on|off]          Show or toggle history compression (L1/L2/L3 pipeline)
+/handoff                   Summarise current session and hand off to a fresh agent (clears history)
+/delegate [on|off]         Show or toggle skill delegation (sub-LLM specialist sessions)
 /reload                    Reload config, prompts, skills, and runtime clients
 /status                    Show the current model, history size, estimated prompt/history tokens, display categories, and endpoint URLs"""
 
@@ -52,6 +54,11 @@ COMPACT_HELP_TEXT = """Compact commands:
 /compact [on|off]          Show current history compression status or toggle it
   on                       Enable L1/L2/L3 history compression
   off                      Disable history compression (useful for debugging)"""
+
+DELEGATE_HELP_TEXT = """Delegate commands:
+/delegate [on|off]         Show or toggle skill delegation for this session
+  on                       Enable sub-LLM specialist sessions for skill execution
+  off                      Disable delegation; all skills execute via direct tool calls"""
 
 STREAM_HELP_TEXT = """Stream commands:
 /stream [on|off]           Show the current LLM streaming setting or toggle it
@@ -99,6 +106,7 @@ def format_status(config, agent) -> str:
         f"memory={'on' if agent.display_category_enabled('memory') else 'off'}",
         f"system={'on' if agent.display_category_enabled('system') else 'off'}",
         f"compact={'on' if agent.compression_enabled() else 'off'}",
+        f"delegate={'on' if agent.delegate_enabled() else 'off'}",
     ]
     token_summary = agent.token_estimate_summary()
     memory_summary = agent.long_term_memory_summary()
@@ -165,6 +173,7 @@ def handle_cli_command(
     agent,
     project_root: Path,
     on_reload: Callable[[], Path],
+    on_handoff: Callable[[], str] | None = None,
 ) -> dict:
     stripped = command_line.strip()
     if not stripped.startswith("/"):
@@ -297,10 +306,36 @@ def handle_cli_command(
 
         return _response(f'Unknown /compact subcommand: {" ".join(args)}\n\n{COMPACT_HELP_TEXT}')
 
+    if command == "/delegate":
+        if not args:
+            status = "on" if agent.delegate_enabled() else "off"
+            return _response(
+                f"Skill delegation: {status}\n\n{DELEGATE_HELP_TEXT}"
+            )
+
+        subcommand = args[0].lower()
+        if subcommand == "on" and len(args) == 1:
+            agent.set_delegate_enabled(True)
+            return _response("Skill delegation enabled (sub-LLM specialist sessions active).")
+
+        if subcommand == "off" and len(args) == 1:
+            agent.set_delegate_enabled(False)
+            return _response("Skill delegation disabled (direct tool calls only).")
+
+        return _response(f'Unknown /delegate subcommand: {" ".join(args)}\n\n{DELEGATE_HELP_TEXT}')
+
     if command == "/status":
         if args:
             return _response(f"Unexpected arguments for {command}")
         return _response(format_status(config, agent))
+
+    if command == "/handoff":
+        if args:
+            return _response(f"/handoff takes no arguments. Usage: /handoff")
+        if on_handoff is None:
+            return _response("Handoff is not available in this context.")
+        result = on_handoff()
+        return _response(result)
 
     if command == "/reload":
         if args:

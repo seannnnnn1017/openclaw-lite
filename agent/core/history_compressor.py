@@ -66,10 +66,16 @@ class HistoryCompressor:
 
     # ── L1: Snip ──────────────────────────────────────────────────────────────
 
-    def apply_l1(self, history: list[Message]) -> list[Message]:
-        """Remove [TOOL HISTORY JSONL] blocks from messages older than L1_PROTECT_LAST_N."""
+    def apply_l1(self, history: list[Message]) -> tuple[list[Message], dict]:
+        """Remove [TOOL HISTORY JSONL] blocks from messages older than L1_PROTECT_LAST_N.
+
+        Returns (history, stats) where stats contains:
+          stripped_count  – number of assistant messages that had TOOL HISTORY removed
+          chars_removed   – total characters removed across all stripped messages
+        """
+        stats: dict = {"stripped_count": 0, "chars_removed": 0}
         if len(history) <= L1_PROTECT_LAST_N:
-            return history
+            return history, stats
 
         cutoff = len(history) - L1_PROTECT_LAST_N
         result: list[Message] = []
@@ -77,22 +83,32 @@ class HistoryCompressor:
             if i < cutoff and msg.role == "assistant" and isinstance(msg.content, str):
                 stripped = _strip_tool_jsonl(msg.content)
                 if stripped != msg.content:
+                    stats["stripped_count"] += 1
+                    stats["chars_removed"] += len(msg.content) - len(stripped)
                     msg = Message(role=msg.role, content=stripped)
             result.append(msg)
-        return result
+        return result, stats
 
     # ── L2: Microcompact ──────────────────────────────────────────────────────
 
-    def apply_l2(self, history: list[Message]) -> list[Message]:
-        """Compact large JSONL entries inside assistant messages in-place."""
+    def apply_l2(self, history: list[Message]) -> tuple[list[Message], dict]:
+        """Compact large JSONL entries inside assistant messages in-place.
+
+        Returns (history, stats) where stats contains:
+          compacted_count – number of assistant messages that had entries compacted
+          chars_removed   – total characters removed across all compacted messages
+        """
+        stats: dict = {"compacted_count": 0, "chars_removed": 0}
         result: list[Message] = []
         for msg in history:
             if msg.role == "assistant" and isinstance(msg.content, str):
                 compacted = _compact_tool_jsonl(msg.content)
                 if compacted != msg.content:
+                    stats["compacted_count"] += 1
+                    stats["chars_removed"] += len(msg.content) - len(compacted)
                     msg = Message(role=msg.role, content=compacted)
             result.append(msg)
-        return result
+        return result, stats
 
     # ── L3: Collapse ──────────────────────────────────────────────────────────
 
@@ -102,27 +118,30 @@ class HistoryCompressor:
             return False
         return total_tokens >= int(self.context_window * L3_USAGE_RATIO)
 
-    def apply_l3(self, history: list[Message]) -> list[Message]:
+    def apply_l3(self, history: list[Message]) -> tuple[list[Message], str]:
         """
         Collapse old turns into a single summary message via an LLM call.
 
         The last L3_PROTECT_LAST_N messages are always preserved verbatim.
+
+        Returns (history, summary_text) where summary_text is the LLM-generated
+        summary (empty string if L3 was skipped or failed).
         """
         if not self.client or not self.model:
-            return history
+            return history, ""
         if len(history) <= L3_PROTECT_LAST_N:
-            return history
+            return history, ""
 
         compressible = history[:-L3_PROTECT_LAST_N]
         protected = history[-L3_PROTECT_LAST_N:]
 
         turns_text = _history_to_readable_text(compressible)
         if not turns_text.strip():
-            return history
+            return history, ""
 
         summary = self._call_l3_summarize(turns_text)
         if not summary:
-            return history
+            return history, ""
 
         summary_msg = Message(
             role="user",
@@ -131,7 +150,7 @@ class HistoryCompressor:
                 + summary
             ),
         )
-        return [summary_msg] + list(protected)
+        return [summary_msg] + list(protected), summary
 
     def _call_l3_summarize(self, turns_text: str) -> str:
         system_prompt = (
@@ -169,7 +188,7 @@ class HistoryCompressor:
         history: list[Message],
         *,
         total_tokens: int,
-    ) -> tuple[list[Message], bool]:
+    ) -> tuple[list[Message], bool, dict]:
         """
         Execute L1 → L2, then L3 if the token budget demands it.
 
@@ -179,15 +198,28 @@ class HistoryCompressor:
             Compressed history.
         l3_triggered : bool
             True if L3 summarisation was actually invoked.
+        stats : dict
+            Aggregated compression statistics with keys:
+            l1_stripped_count, l1_chars_removed,
+            l2_compacted_count, l2_chars_removed,
+            l3_summary (str, empty if not triggered).
         """
-        history = self.apply_l1(history)
-        history = self.apply_l2(history)
+        history, l1_stats = self.apply_l1(history)
+        history, l2_stats = self.apply_l2(history)
         l3_triggered = False
+        l3_summary = ""
         if self.check_l3_needed(total_tokens=total_tokens):
-            compressed = self.apply_l3(history)
-            l3_triggered = compressed is not history or compressed != history
+            compressed, l3_summary = self.apply_l3(history)
+            l3_triggered = bool(l3_summary)
             history = compressed
-        return history, l3_triggered
+        stats = {
+            "l1_stripped_count": l1_stats["stripped_count"],
+            "l1_chars_removed": l1_stats["chars_removed"],
+            "l2_compacted_count": l2_stats["compacted_count"],
+            "l2_chars_removed": l2_stats["chars_removed"],
+            "l3_summary": l3_summary,
+        }
+        return history, l3_triggered, stats
 
 
 # ── Private helpers ────────────────────────────────────────────────────────────

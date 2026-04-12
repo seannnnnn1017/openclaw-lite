@@ -27,6 +27,8 @@ Supported actions:
 - `insert_after`: insert text immediately after a matching text fragment
 - `insert_before`: insert text immediately before a matching text fragment
 - `restore`: restore a previous file state from a backup ID
+- `list_directory` — list files in a directory; supports glob `pattern` and `recursive`
+- `read_all` — read multiple files at once; accepts `paths` array or `dir`+`pattern`
 
 Backup behavior:
 - Every mutating action creates a backup record before the change is applied.
@@ -95,3 +97,20 @@ JSON examples:
 - `{"skill":"file-control","action":"replace_text","args":{"path":"notes/todo.txt","target":"old","new_text":"new","occurrence":0,"reason":"Normalize all labels"}}`
 - `{"skill":"file-control","action":"insert_after","args":{"path":"notes/todo.txt","target":"Title","new_text":"\n- item","reason":"Add a new todo bullet"}}`
 - `{"skill":"file-control","action":"restore","args":{"backup_id":"FILE-000001"}}`
+
+### list_directory
+
+{"skill":"file-control","action":"list_directory","args":{"path":"<dir>","pattern":"*.md","recursive":false}}
+
+Returns data.files (list of {name, path, size_bytes, extension}) and data.count.
+Use this to discover files before calling read_all.
+
+### read_all
+
+{"skill":"file-control","action":"read_all","args":{"dir":"<dir>","pattern":"*.md"}}
+{"skill":"file-control","action":"read_all","args":{"paths":["<path1>","<path2>"]}}
+
+Returns data.files (list of {path, name, content, status, truncated}).
+Files larger than 200 KB are truncated with truncated:true flag — byte-level truncation, safe for CJK content.
+Single-file errors do not abort the rest — check each entry's status field.
+Reading backup storage (temporary_data/) is blocked by a safety guard.
