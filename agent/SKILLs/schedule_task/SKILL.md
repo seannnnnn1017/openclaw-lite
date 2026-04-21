@@ -13,6 +13,7 @@ Use this skill when the user wants the agent to do something later, do it repeat
 This is an agent-native scheduler, not Windows Task Scheduler.
 
 Important behavior:
+- Check the time zone of the agent's host environment and clarify if the user expresses a schedule in relative time words such as `today`, `tomorrow`, `day after tomorrow`, or Chinese equivalents. Resolve those words to actual dates before creating the schedule, preferably by calling `time-query.now` first.
 - Scheduled tasks only run while the agent process is open.
 - The tool only stores timing and task metadata.
 - When a task is due, the scheduler sends the stored `task_prompt` back into the agent.
